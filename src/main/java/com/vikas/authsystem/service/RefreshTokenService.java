@@ -3,6 +3,7 @@ package com.vikas.authsystem.service;
 import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.exception.UnauthorizedException;
 import com.vikas.authsystem.config.JwtProperties;
+import com.vikas.authsystem.entity.AuditAction;
 import com.vikas.authsystem.entity.RefreshToken;
 import com.vikas.authsystem.entity.User;
 import com.vikas.authsystem.repository.RefreshTokenRepository;
@@ -28,16 +29,19 @@ public class RefreshTokenService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final JwtProperties jwtProperties;
     private final JwtUtil jwtUtil;
+    private final AuditService auditService;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public RefreshTokenService(
             RefreshTokenRepository refreshTokenRepository,
             JwtProperties jwtProperties,
-            JwtUtil jwtUtil
+            JwtUtil jwtUtil,
+            AuditService auditService
     ) {
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtProperties = jwtProperties;
         this.jwtUtil = jwtUtil;
+        this.auditService = auditService;
     }
 
     public String generateRawRefreshToken() {
@@ -53,6 +57,7 @@ public class RefreshTokenService {
     @Transactional
     public void storeRefreshToken(User user, String rawRefreshToken, String deviceId) {
         String normalizedDeviceId = normalizeDeviceId(deviceId);
+        // Keep a single active refresh token per user/device pair to simplify revocation and replay handling.
         revokeActiveTokensForDevice(user.getId(), normalizedDeviceId, null);
         RefreshToken refreshToken = new RefreshToken();
         refreshToken.setUser(user);
@@ -63,14 +68,29 @@ public class RefreshTokenService {
     }
 
     @Transactional
-    public LoginResponse refreshAccessToken(String rawRefreshToken, String deviceId) {
+    public LoginResponse refreshAccessToken(String rawRefreshToken, String deviceId, String clientIp) {
         RefreshToken currentToken = refreshTokenRepository.findByTokenHash(hashToken(rawRefreshToken))
-                .orElseThrow(() -> new UnauthorizedException("Invalid refresh token"));
+                .orElse(null);
+        if (currentToken == null) {
+            auditService.recordEvent(AuditAction.TOKEN_REFRESH_FAILED, null, deviceId, clientIp);
+            throw new UnauthorizedException("Invalid refresh token");
+        }
 
-        validateRefreshTokenForRotation(currentToken, deviceId);
+        try {
+            validateRefreshTokenForRotation(currentToken, deviceId);
+        } catch (UnauthorizedException ex) {
+            auditService.recordEvent(
+                    AuditAction.TOKEN_REFRESH_FAILED,
+                    currentToken.getUser().getId(),
+                    currentToken.getDeviceId(),
+                    clientIp
+            );
+            throw ex;
+        }
 
         String nextRefreshToken = generateRawRefreshToken();
         String nextRefreshTokenHash = hashToken(nextRefreshToken);
+        // Rotation revokes the presented token and immediately replaces it with a new one.
         currentToken.setRevokedAt(Instant.now());
         currentToken.setReplacedByTokenHash(nextRefreshTokenHash);
 
@@ -84,17 +104,29 @@ public class RefreshTokenService {
         refreshTokenRepository.save(rotatedToken);
 
         String accessToken = jwtUtil.generateAccessToken(currentToken.getUser().getId(), currentToken.getUser().getRole().name());
+        auditService.recordEvent(
+                AuditAction.TOKEN_REFRESH,
+                currentToken.getUser().getId(),
+                currentToken.getDeviceId(),
+                clientIp
+        );
         return new LoginResponse(accessToken, nextRefreshToken, "Bearer", jwtUtil.accessTokenTtlSeconds());
     }
 
     @Transactional
-    public void revokeRefreshToken(String rawRefreshToken, UUID expectedUserId) {
+    public RefreshToken revokeRefreshToken(String rawRefreshToken, UUID expectedUserId) {
         RefreshToken refreshToken = refreshTokenRepository.findByTokenHash(hashToken(rawRefreshToken))
                 .orElseThrow(() -> new UnauthorizedException("Invalid refresh token"));
         if (expectedUserId != null && !refreshToken.getUser().getId().equals(expectedUserId)) {
             throw new UnauthorizedException("Refresh token does not belong to the authenticated user");
         }
         revokeToken(refreshToken, null);
+        return refreshToken;
+    }
+
+    @Transactional
+    public void revokeAllTokensForUser(UUID userId) {
+        revokeAllUserTokens(userId);
     }
 
     @Transactional
@@ -127,6 +159,7 @@ public class RefreshTokenService {
         }
 
         if (refreshToken.getRevokedAt() != null) {
+            // A revoked token being presented again is treated as replay and forces user-wide revocation.
             revokeAllUserTokens(refreshToken.getUser().getId());
             log.warn("Refresh token reuse detected for userId={}", refreshToken.getUser().getId());
             throw new UnauthorizedException("Refresh token reuse detected");

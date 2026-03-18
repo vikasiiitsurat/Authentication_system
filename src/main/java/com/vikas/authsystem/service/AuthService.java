@@ -3,12 +3,16 @@ package com.vikas.authsystem.service;
 import com.vikas.authsystem.dto.LoginRequest;
 import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.LogoutRequest;
+import com.vikas.authsystem.dto.PasswordChangeRequest;
 import com.vikas.authsystem.dto.RefreshTokenRequest;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
+import com.vikas.authsystem.entity.AuditAction;
+import com.vikas.authsystem.entity.RefreshToken;
 import com.vikas.authsystem.entity.User;
 import com.vikas.authsystem.entity.UserRole;
 import com.vikas.authsystem.exception.AccountLockedException;
+import com.vikas.authsystem.exception.BadRequestException;
 import com.vikas.authsystem.exception.ResourceConflictException;
 import com.vikas.authsystem.exception.UnauthorizedException;
 import com.vikas.authsystem.repository.UserRepository;
@@ -34,6 +38,7 @@ public class AuthService {
     private final RefreshTokenService refreshTokenService;
     private final TemporaryCacheService temporaryCacheService;
     private final TokenBlacklistService tokenBlacklistService;
+    private final AuditService auditService;
 
     public AuthService(
             UserRepository userRepository,
@@ -41,7 +46,8 @@ public class AuthService {
             JwtUtil jwtUtil,
             RefreshTokenService refreshTokenService,
             TemporaryCacheService temporaryCacheService,
-            TokenBlacklistService tokenBlacklistService
+            TokenBlacklistService tokenBlacklistService,
+            AuditService auditService
     ) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
@@ -49,12 +55,14 @@ public class AuthService {
         this.refreshTokenService = refreshTokenService;
         this.temporaryCacheService = temporaryCacheService;
         this.tokenBlacklistService = tokenBlacklistService;
+        this.auditService = auditService;
     }
 
     @Transactional
-    public RegisterResponse register(RegisterRequest request) {
+    public RegisterResponse register(RegisterRequest request, String clientIp) {
         String normalizedEmail = normalizeEmail(request.email());
         if (userRepository.existsByEmail(normalizedEmail)) {
+            auditService.recordEvent(AuditAction.REGISTER_FAILED, null, null, clientIp);
             throw new ResourceConflictException("Email is already registered");
         }
 
@@ -65,6 +73,7 @@ public class AuthService {
         user.setFailedAttempts(0);
         user.setAccountLocked(false);
         User savedUser = userRepository.save(user);
+        auditService.recordEvent(AuditAction.REGISTER_SUCCESS, savedUser.getId(), null, clientIp);
 
         log.info("User registered successfully with userId={}", savedUser.getId());
         return new RegisterResponse(savedUser.getId(), savedUser.getEmail(), "Registration successful", savedUser.getCreatedAt());
@@ -74,37 +83,50 @@ public class AuthService {
     public LoginResponse login(LoginRequest request, String clientIp) {
         String normalizedEmail = normalizeEmail(request.email());
         User user = userRepository.findByEmail(normalizedEmail)
-                .orElseThrow(() -> new UnauthorizedException("Invalid credentials"));
+                .orElse(null);
+
+        if (user == null) {
+            auditService.recordEvent(AuditAction.LOGIN_FAILED, null, request.deviceId(), clientIp);
+            throw new UnauthorizedException("Invalid credentials");
+        }
 
         if (user.isAccountLocked()) {
+            auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
             throw new AccountLockedException("Account is locked due to multiple failed login attempts");
         }
 
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             handleFailedLogin(user);
+            auditService.recordEvent(AuditAction.LOGIN_FAILED, user.getId(), request.deviceId(), clientIp);
+            if (user.isAccountLocked()) {
+                auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
+            }
             throw new UnauthorizedException("Invalid credentials");
         }
 
         resetFailedAttempts(user);
+        // Access tokens stay stateless while refresh-token lifecycle is delegated to RefreshTokenService.
         String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getRole().name());
         String refreshToken = refreshTokenService.generateRawRefreshToken();
         refreshTokenService.storeRefreshToken(user, refreshToken, request.deviceId());
         temporaryCacheService.cacheLastLoginMetadata(user.getId(), clientIp);
         refreshTokenService.deleteExpiredRefreshTokens();
+        auditService.recordEvent(AuditAction.LOGIN_SUCCESS, user.getId(), request.deviceId(), clientIp);
 
         log.info("User login succeeded for userId={} from ip={}", user.getId(), clientIp);
         return new LoginResponse(accessToken, refreshToken, "Bearer", jwtUtil.accessTokenTtlSeconds());
     }
 
     @Transactional
-    public LoginResponse refresh(RefreshTokenRequest request) {
-        return refreshTokenService.refreshAccessToken(request.refreshToken(), request.deviceId());
+    public LoginResponse refresh(RefreshTokenRequest request, String clientIp) {
+        return refreshTokenService.refreshAccessToken(request.refreshToken(), request.deviceId(), clientIp);
     }
 
     @Transactional
-    public void logout(LogoutRequest request, String bearerToken) {
+    public void logout(LogoutRequest request, String bearerToken, String clientIp) {
         java.util.UUID authenticatedUserId = null;
         if (bearerToken != null && !bearerToken.isBlank()) {
+            // The access token is blacklisted independently from refresh-token revocation to cover both token types.
             Jws<Claims> parsedToken = jwtUtil.parseToken(bearerToken);
             Claims claims = parsedToken.getPayload();
             authenticatedUserId = java.util.UUID.fromString(claims.getSubject());
@@ -114,7 +136,43 @@ public class AuthService {
                 tokenBlacklistService.blacklist(jti, java.time.Duration.ofSeconds(ttlSeconds));
             }
         }
-        refreshTokenService.revokeRefreshToken(request.refreshToken(), authenticatedUserId);
+        RefreshToken refreshToken;
+        try {
+            refreshToken = refreshTokenService.revokeRefreshToken(request.refreshToken(), authenticatedUserId);
+        } catch (UnauthorizedException ex) {
+            auditService.recordEvent(AuditAction.LOGOUT_FAILED, authenticatedUserId, null, clientIp);
+            throw ex;
+        }
+        auditService.recordEvent(
+                AuditAction.LOGOUT,
+                refreshToken.getUser().getId(),
+                refreshToken.getDeviceId(),
+                clientIp
+        );
+    }
+
+    @Transactional
+    public void changePassword(java.util.UUID authenticatedUserId, PasswordChangeRequest request, String clientIp) {
+        User user = userRepository.findById(authenticatedUserId)
+                .orElseThrow(() -> new UnauthorizedException("Authenticated user not found"));
+
+        if (!passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
+            auditService.recordEvent(AuditAction.PASSWORD_CHANGE_FAILED, user.getId(), request.deviceId(), clientIp);
+            throw new UnauthorizedException("Current password is invalid");
+        }
+
+        if (request.currentPassword().equals(request.newPassword())) {
+            auditService.recordEvent(AuditAction.PASSWORD_CHANGE_FAILED, user.getId(), request.deviceId(), clientIp);
+            throw new BadRequestException("New password must be different from the current password");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+        user.setFailedAttempts(0);
+        user.setAccountLocked(false);
+        userRepository.save(user);
+        // Rotating the password invalidates every active refresh token for the user.
+        refreshTokenService.revokeAllTokensForUser(user.getId());
+        auditService.recordEvent(AuditAction.PASSWORD_CHANGE, user.getId(), request.deviceId(), clientIp);
     }
 
     private void handleFailedLogin(User user) {

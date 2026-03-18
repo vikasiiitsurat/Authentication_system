@@ -1,0 +1,15 @@
+package com.vikas.authsystem.entity;
+
+public enum AuditAction {
+    REGISTER_SUCCESS,
+    REGISTER_FAILED,
+    LOGIN_SUCCESS,
+    LOGIN_FAILED,
+    ACCOUNT_LOCKED,
+    LOGOUT,
+    LOGOUT_FAILED,
+    TOKEN_REFRESH,
+    TOKEN_REFRESH_FAILED,
+    PASSWORD_CHANGE,
+    PASSWORD_CHANGE_FAILED
+}

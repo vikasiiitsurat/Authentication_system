@@ -51,6 +51,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 return;
             }
 
+            // The JWT subject is used as the Spring Security principal for downstream service authorization.
             String userId = claims.get("user_id", String.class);
             String role = claims.get("role", String.class);
             UsernamePasswordAuthenticationToken authentication =
