@@ -45,9 +45,19 @@ public class GlobalExceptionHandler {
         return buildResponse(HttpStatus.CONFLICT, ex.getMessage(), null);
     }
 
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleNotFound(ResourceNotFoundException ex) {
+        return buildResponse(HttpStatus.NOT_FOUND, ex.getMessage(), null);
+    }
+
     @ExceptionHandler(UnauthorizedException.class)
     public ResponseEntity<ApiErrorResponse> handleUnauthorized(UnauthorizedException ex) {
         return buildResponse(HttpStatus.UNAUTHORIZED, ex.getMessage(), null);
+    }
+
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<ApiErrorResponse> handleForbidden(ForbiddenException ex) {
+        return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage(), null);
     }
 
     @ExceptionHandler(AccountLockedException.class)
@@ -58,6 +68,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(TooManyRequestsException.class)
     public ResponseEntity<ApiErrorResponse> handleTooManyRequests(TooManyRequestsException ex) {
         return buildResponse(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage(), null);
+    }
+
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public ResponseEntity<ApiErrorResponse> handleServiceUnavailable(ServiceUnavailableException ex) {
+        return buildResponse(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), null);
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

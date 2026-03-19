@@ -45,8 +45,17 @@ public class User {
     @Column(name = "failed_attempts", nullable = false)
     private int failedAttempts;
 
-    @Column(name = "account_locked", nullable = false)
-    private boolean accountLocked;
+    @Column(name = "lock_until")
+    private Instant lockUntil;
+
+    @Column(name = "last_failed_attempt")
+    private Instant lastFailedAttempt;
+
+    @Column(name = "email_verified", nullable = false)
+    private boolean emailVerified;
+
+    @Column(name = "email_verified_at")
+    private Instant emailVerifiedAt;
 
     @PrePersist
     public void prePersist() {
@@ -118,11 +127,35 @@ public class User {
         this.failedAttempts = failedAttempts;
     }
 
-    public boolean isAccountLocked() {
-        return accountLocked;
+    public Instant getLockUntil() {
+        return lockUntil;
     }
 
-    public void setAccountLocked(boolean accountLocked) {
-        this.accountLocked = accountLocked;
+    public void setLockUntil(Instant lockUntil) {
+        this.lockUntil = lockUntil;
+    }
+
+    public Instant getLastFailedAttempt() {
+        return lastFailedAttempt;
+    }
+
+    public void setLastFailedAttempt(Instant lastFailedAttempt) {
+        this.lastFailedAttempt = lastFailedAttempt;
+    }
+
+    public boolean isEmailVerified() {
+        return emailVerified;
+    }
+
+    public void setEmailVerified(boolean emailVerified) {
+        this.emailVerified = emailVerified;
+    }
+
+    public Instant getEmailVerifiedAt() {
+        return emailVerifiedAt;
+    }
+
+    public void setEmailVerifiedAt(Instant emailVerifiedAt) {
+        this.emailVerifiedAt = emailVerifiedAt;
     }
 }

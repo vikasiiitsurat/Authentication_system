@@ -7,6 +7,9 @@ public record RegisterResponse(
         UUID userId,
         String email,
         String message,
-        Instant createdAt
+        Instant createdAt,
+        boolean emailVerificationRequired,
+        long otpExpiresInSeconds,
+        long resendAvailableInSeconds
 ) {
 }

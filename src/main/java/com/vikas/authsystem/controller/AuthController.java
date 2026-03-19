@@ -5,16 +5,19 @@ import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.LogoutRequest;
 import com.vikas.authsystem.dto.PasswordChangeRequest;
 import com.vikas.authsystem.dto.RefreshTokenRequest;
+import com.vikas.authsystem.dto.ResendVerificationOtpRequest;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
+import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
+import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
+import com.vikas.authsystem.security.AuthenticatedUser;
 import com.vikas.authsystem.service.AuthService;
 import com.vikas.authsystem.service.RateLimiterService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -36,6 +39,7 @@ public class AuthController {
     public ResponseEntity<RegisterResponse> register(@Valid @RequestBody RegisterRequest request, HttpServletRequest servletRequest) {
         // Controllers stay thin: extract transport-level details and delegate all business rules.
         String clientIp = extractClientIp(servletRequest);
+        rateLimiterService.validateOtpGenerationRateLimit(request.email(), clientIp);
         RegisterResponse response = authService.register(request, clientIp);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
@@ -55,14 +59,36 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/logout")
-    public ResponseEntity<Void> logout(
-            @Valid @RequestBody LogoutRequest request,
+    @PostMapping("/verify-email")
+    public ResponseEntity<EmailVerificationStatusResponse> verifyEmail(
+            @Valid @RequestBody VerifyEmailOtpRequest request,
             HttpServletRequest servletRequest
     ) {
         String clientIp = extractClientIp(servletRequest);
-        String bearerToken = extractBearerToken(servletRequest);
-        authService.logout(request, bearerToken, clientIp);
+        rateLimiterService.validateOtpVerificationRateLimit(request.email(), clientIp);
+        EmailVerificationStatusResponse response = authService.verifyEmailOtp(request, clientIp);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/resend-verification-otp")
+    public ResponseEntity<EmailVerificationStatusResponse> resendVerificationOtp(
+            @Valid @RequestBody ResendVerificationOtpRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        String clientIp = extractClientIp(servletRequest);
+        rateLimiterService.validateOtpGenerationRateLimit(request.email(), clientIp);
+        EmailVerificationStatusResponse response = authService.resendVerificationOtp(request, clientIp);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout(
+            @Valid @RequestBody LogoutRequest request,
+            HttpServletRequest servletRequest,
+            @AuthenticationPrincipal AuthenticatedUser authenticatedUser
+    ) {
+        String clientIp = extractClientIp(servletRequest);
+        authService.logout(request, authenticatedUser, clientIp);
         return ResponseEntity.noContent().build();
     }
 
@@ -70,11 +96,10 @@ public class AuthController {
     public ResponseEntity<Void> changePassword(
             @Valid @RequestBody PasswordChangeRequest request,
             HttpServletRequest servletRequest,
-            Authentication authentication
+            @AuthenticationPrincipal AuthenticatedUser authenticatedUser
     ) {
         String clientIp = extractClientIp(servletRequest);
-        java.util.UUID authenticatedUserId = java.util.UUID.fromString(authentication.getName());
-        authService.changePassword(authenticatedUserId, request, clientIp);
+        authService.changePassword(authenticatedUser.getUserId(), request, clientIp);
         return ResponseEntity.noContent().build();
     }
 
@@ -85,13 +110,5 @@ public class AuthController {
             return xForwardedFor.split(",")[0].trim();
         }
         return request.getRemoteAddr();
-    }
-
-    private String extractBearerToken(HttpServletRequest request) {
-        String authorization = request.getHeader(HttpHeaders.AUTHORIZATION);
-        if (authorization != null && authorization.startsWith("Bearer ")) {
-            return authorization.substring(7);
-        }
-        return null;
     }
 }

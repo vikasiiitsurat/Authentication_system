@@ -1,6 +1,7 @@
 package com.vikas.authsystem;
 
 import com.vikas.authsystem.config.JwtProperties;
+import com.vikas.authsystem.config.MailProperties;
 import com.vikas.authsystem.config.RateLimitProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -9,7 +10,7 @@ import org.springframework.cache.annotation.EnableCaching;
 
 @SpringBootApplication
 @EnableCaching
-@EnableConfigurationProperties({JwtProperties.class, RateLimitProperties.class})
+@EnableConfigurationProperties({JwtProperties.class, RateLimitProperties.class, MailProperties.class})
 public class AuthSystemApplication {
 
     public static void main(String[] args) {

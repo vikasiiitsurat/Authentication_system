@@ -2,25 +2,44 @@ package com.vikas.authsystem.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-@ConfigurationProperties(prefix = "app.rate-limit.login")
+@ConfigurationProperties(prefix = "app.rate-limit")
 public class RateLimitProperties {
 
-    private int maxAttemptsPerMinute;
-    private long windowSeconds;
+    private final Limit login = new Limit();
+    private final Limit otpGeneration = new Limit();
+    private final Limit otpVerification = new Limit();
 
-    public int getMaxAttemptsPerMinute() {
-        return maxAttemptsPerMinute;
+    public Limit getLogin() {
+        return login;
     }
 
-    public void setMaxAttemptsPerMinute(int maxAttemptsPerMinute) {
-        this.maxAttemptsPerMinute = maxAttemptsPerMinute;
+    public Limit getOtpGeneration() {
+        return otpGeneration;
     }
 
-    public long getWindowSeconds() {
-        return windowSeconds;
+    public Limit getOtpVerification() {
+        return otpVerification;
     }
 
-    public void setWindowSeconds(long windowSeconds) {
-        this.windowSeconds = windowSeconds;
+    public static class Limit {
+
+        private int maxAttempts;
+        private long windowSeconds;
+
+        public int getMaxAttempts() {
+            return maxAttempts;
+        }
+
+        public void setMaxAttempts(int maxAttempts) {
+            this.maxAttempts = maxAttempts;
+        }
+
+        public long getWindowSeconds() {
+            return windowSeconds;
+        }
+
+        public void setWindowSeconds(long windowSeconds) {
+            this.windowSeconds = windowSeconds;
+        }
     }
 }
