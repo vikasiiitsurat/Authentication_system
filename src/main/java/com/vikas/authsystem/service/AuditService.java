@@ -3,6 +3,7 @@ package com.vikas.authsystem.service;
 import com.vikas.authsystem.entity.AuditAction;
 import com.vikas.authsystem.entity.AuditLog;
 import com.vikas.authsystem.repository.AuditLogRepository;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,10 +22,16 @@ public class AuditService {
 
     private final AuditLogRepository auditLogRepository;
     private final TransactionTemplate transactionTemplate;
+    private final AuthMetricsService authMetricsService;
 
-    public AuditService(AuditLogRepository auditLogRepository, PlatformTransactionManager transactionManager) {
+    public AuditService(
+            AuditLogRepository auditLogRepository,
+            PlatformTransactionManager transactionManager,
+            AuthMetricsService authMetricsService
+    ) {
         this.auditLogRepository = auditLogRepository;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.authMetricsService = authMetricsService;
         // Audit persistence must not share the caller transaction or auth flows could fail on audit errors.
         this.transactionTemplate.setPropagationBehaviorName("PROPAGATION_REQUIRES_NEW");
     }
@@ -36,10 +43,12 @@ public class AuditService {
         auditLog.setDeviceId(normalizeDeviceId(deviceId));
         auditLog.setIpAddress(normalizeIpAddress(ipAddress));
         auditLog.setTimestamp(Instant.now());
+        Timer.Sample sample = authMetricsService.startTimer();
 
         transactionTemplate.executeWithoutResult(status -> {
             try {
                 auditLogRepository.saveAndFlush(auditLog);
+                authMetricsService.recordAuditPersistence(action, "persisted", sample);
                 // Structured fields keep audit events easy to filter in centralized logging systems.
                 log.info(
                         "audit_event action={} userId={} deviceId={} ipAddress={}",
@@ -50,6 +59,7 @@ public class AuditService {
                 );
             } catch (RuntimeException ex) {
                 status.setRollbackOnly();
+                authMetricsService.recordAuditPersistence(action, "failed", sample);
                 log.error(
                         "audit_event_persist_failed action={} userId={} deviceId={} ipAddress={} error={}",
                         action,

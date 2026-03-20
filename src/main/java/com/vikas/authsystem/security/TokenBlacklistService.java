@@ -16,6 +16,9 @@ public class TokenBlacklistService {
     }
 
     public void blacklist(String jti, Duration ttl) {
+        if (jti == null || ttl == null || ttl.isZero() || ttl.isNegative()) {
+            return;
+        }
         redisTemplate.opsForValue().set(KEY_PREFIX + jti, "1", ttl);
     }
 

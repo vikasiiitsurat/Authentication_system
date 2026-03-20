@@ -3,6 +3,7 @@ package com.vikas.authsystem.service;
 import com.vikas.authsystem.dto.LoginRequest;
 import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.LogoutRequest;
+import com.vikas.authsystem.dto.PasswordChangeRequest;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
 import com.vikas.authsystem.dto.ResendVerificationOtpRequest;
@@ -16,6 +17,7 @@ import com.vikas.authsystem.exception.UnauthorizedException;
 import com.vikas.authsystem.repository.UserRepository;
 import com.vikas.authsystem.security.AuthenticatedUser;
 import com.vikas.authsystem.security.JwtUtil;
+import com.vikas.authsystem.security.SessionBlacklistService;
 import com.vikas.authsystem.security.TokenBlacklistService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,9 +57,11 @@ class AuthServiceTest {
     private final RefreshTokenService refreshTokenService = mock(RefreshTokenService.class);
     private final TemporaryCacheService temporaryCacheService = mock(TemporaryCacheService.class);
     private final TokenBlacklistService tokenBlacklistService = mock(TokenBlacklistService.class);
+    private final SessionBlacklistService sessionBlacklistService = mock(SessionBlacklistService.class);
     private final EmailVerificationOtpService emailVerificationOtpService = mock(EmailVerificationOtpService.class);
     private final OtpDeliveryService otpDeliveryService = mock(OtpDeliveryService.class);
     private final AuditService auditService = mock(AuditService.class);
+    private final AuthMetricsService authMetricsService = mock(AuthMetricsService.class);
 
     private AuthService authService;
 
@@ -71,9 +75,11 @@ class AuthServiceTest {
                 refreshTokenService,
                 temporaryCacheService,
                 tokenBlacklistService,
+                sessionBlacklistService,
                 emailVerificationOtpService,
                 otpDeliveryService,
                 auditService,
+                authMetricsService,
                 clock
         );
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> {
@@ -99,6 +105,7 @@ class AuthServiceTest {
         assertTrue(exception.getMessage().contains(user.getLockUntil().toString()));
         verify(passwordEncoder, never()).matches(anyString(), anyString());
         verify(userRepository, never()).save(any(User.class));
+        verify(authMetricsService).recordOperation("login", "account_locked", null);
     }
 
     @Test
@@ -109,9 +116,19 @@ class AuthServiceTest {
         user.setLockUntil(FIXED_NOW.minusSeconds(1));
         when(userRepository.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("correct-password", user.getPasswordHash())).thenReturn(true);
-        when(jwtUtil.generateAccessToken(user.getId(), user.getRole().name())).thenReturn("access-token");
+        UUID sessionId = UUID.randomUUID();
+        when(jwtUtil.generateAccessToken(user.getId(), user.getRole().name(), sessionId)).thenReturn("access-token");
         when(jwtUtil.accessTokenTtlSeconds()).thenReturn(900L);
         when(refreshTokenService.generateRawRefreshToken()).thenReturn("refresh-token");
+        when(refreshTokenService.storeRefreshToken(user, "refresh-token", "device-1", "127.0.0.1"))
+                .thenReturn(new RefreshTokenService.StoredSession(
+                        sessionId,
+                        "device-1",
+                        FIXED_NOW,
+                        FIXED_NOW,
+                        FIXED_NOW.plusSeconds(3600),
+                        "127.0.0.1"
+                ));
 
         LoginResponse response = authService.login(
                 new LoginRequest(user.getEmail(), "correct-password", "device-1"),
@@ -124,7 +141,8 @@ class AuthServiceTest {
         assertNull(user.getLockUntil());
         assertNull(user.getLastFailedAttempt());
         verify(userRepository, times(2)).save(user);
-        verify(refreshTokenService).storeRefreshToken(user, "refresh-token", "device-1");
+        verify(refreshTokenService).storeRefreshToken(user, "refresh-token", "device-1", "127.0.0.1");
+        verify(authMetricsService).recordOperation("login", "success", null);
     }
 
     @Test
@@ -141,6 +159,7 @@ class AuthServiceTest {
 
         assertEquals("Email verification is required before logging in", exception.getMessage());
         verify(refreshTokenService, never()).generateRawRefreshToken();
+        verify(authMetricsService).recordOperation("login", "email_verification_required", null);
     }
 
     @ParameterizedTest
@@ -174,6 +193,7 @@ class AuthServiceTest {
         AuthenticatedUser authenticatedUser = new AuthenticatedUser(
                 user.getId(),
                 user.getRole(),
+                UUID.randomUUID(),
                 "access-jti",
                 FIXED_NOW.plusSeconds(300)
         );
@@ -186,6 +206,34 @@ class AuthServiceTest {
 
         verify(tokenBlacklistService).blacklist("access-jti", Duration.ofSeconds(300));
         verify(refreshTokenService).revokeRefreshToken("refresh-token", user.getId());
+        verify(authMetricsService).recordOperation("logout", "success", null);
+    }
+
+    @Test
+    void changePasswordRevokesAllSessionsAndBlacklistsCurrentAccessToken() {
+        User user = baseUser();
+        AuthenticatedUser authenticatedUser = new AuthenticatedUser(
+                user.getId(),
+                user.getRole(),
+                UUID.randomUUID(),
+                "access-jti",
+                FIXED_NOW.plusSeconds(300)
+        );
+        when(userRepository.findByIdForUpdate(user.getId())).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches("current-password", user.getPasswordHash())).thenReturn(true);
+        when(passwordEncoder.encode("new-password-123")).thenReturn("new-password-hash");
+
+        authService.changePassword(
+                authenticatedUser,
+                new PasswordChangeRequest("current-password", "new-password-123", "device-1"),
+                "127.0.0.1"
+        );
+
+        assertEquals("new-password-hash", user.getPasswordHash());
+        verify(refreshTokenService).revokeAllTokensForUser(user.getId());
+        verify(tokenBlacklistService).blacklist("access-jti", Duration.ofSeconds(300));
+        verify(sessionBlacklistService).blacklist(authenticatedUser.getSessionId(), Duration.ofSeconds(300));
+        verify(authMetricsService).recordOperation("change_password", "success", null);
     }
 
     @Test
@@ -203,6 +251,7 @@ class AuthServiceTest {
         assertEquals(180, response.otpExpiresInSeconds());
         assertEquals(30, response.resendAvailableInSeconds());
         verify(otpDeliveryService).sendVerificationOtp("new@example.com", "482913", 180);
+        verify(authMetricsService).recordOperation("register", "success", null);
     }
 
     @Test
@@ -223,6 +272,7 @@ class AuthServiceTest {
         assertEquals("new-hash", existingUser.getPasswordHash());
         verify(userRepository).save(existingUser);
         verify(otpDeliveryService).sendVerificationOtp(existingUser.getEmail(), "222333", 180);
+        verify(authMetricsService).recordOperation("register", "pending_verification", null);
     }
 
     @Test
@@ -241,6 +291,7 @@ class AuthServiceTest {
         assertTrue(response.verified());
         assertTrue(user.isEmailVerified());
         verify(userRepository).save(user);
+        verify(authMetricsService).recordOperation("verify_email_otp", "success", null);
     }
 
     @Test
@@ -259,6 +310,7 @@ class AuthServiceTest {
         assertEquals(180, response.expiresInSeconds());
         assertEquals(30, response.resendAvailableInSeconds());
         verify(otpDeliveryService).sendVerificationOtp(user.getEmail(), "111222", 180);
+        verify(authMetricsService).recordOperation("resend_verification_otp", "success", null);
     }
 
     private static Stream<Arguments> lockEscalationCases() {

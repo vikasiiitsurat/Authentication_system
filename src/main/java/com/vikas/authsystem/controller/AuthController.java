@@ -99,7 +99,7 @@ public class AuthController {
             @AuthenticationPrincipal AuthenticatedUser authenticatedUser
     ) {
         String clientIp = extractClientIp(servletRequest);
-        authService.changePassword(authenticatedUser.getUserId(), request, clientIp);
+        authService.changePassword(authenticatedUser, request, clientIp);
         return ResponseEntity.noContent().build();
     }
 

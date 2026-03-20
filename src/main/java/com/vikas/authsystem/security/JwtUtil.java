@@ -30,7 +30,7 @@ public class JwtUtil {
         this.signingKey = Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret()));
     }
 
-    public String generateAccessToken(UUID userId, String role) {
+    public String generateAccessToken(UUID userId, String role, UUID sessionId) {
         Instant now = Instant.now();
         Instant expiry = now.plus(jwtProperties.getAccessTokenMinutes(), ChronoUnit.MINUTES);
         String jti = UUID.randomUUID().toString();
@@ -43,7 +43,8 @@ public class JwtUtil {
                 .expiration(Date.from(expiry))
                 .claims(Map.of(
                         "user_id", userId.toString(),
-                        "role", role
+                        "role", role,
+                        "session_id", sessionId.toString()
                 ))
                 .signWith(signingKey)
                 .compact();

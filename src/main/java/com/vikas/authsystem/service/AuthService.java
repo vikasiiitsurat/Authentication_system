@@ -22,7 +22,9 @@ import com.vikas.authsystem.exception.UnauthorizedException;
 import com.vikas.authsystem.repository.UserRepository;
 import com.vikas.authsystem.security.AuthenticatedUser;
 import com.vikas.authsystem.security.JwtUtil;
+import com.vikas.authsystem.security.SessionBlacklistService;
 import com.vikas.authsystem.security.TokenBlacklistService;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -49,9 +51,11 @@ public class AuthService {
     private final RefreshTokenService refreshTokenService;
     private final TemporaryCacheService temporaryCacheService;
     private final TokenBlacklistService tokenBlacklistService;
+    private final SessionBlacklistService sessionBlacklistService;
     private final EmailVerificationOtpService emailVerificationOtpService;
     private final OtpDeliveryService otpDeliveryService;
     private final AuditService auditService;
+    private final AuthMetricsService authMetricsService;
     private final Clock clock;
 
     public AuthService(
@@ -61,9 +65,11 @@ public class AuthService {
             RefreshTokenService refreshTokenService,
             TemporaryCacheService temporaryCacheService,
             TokenBlacklistService tokenBlacklistService,
+            SessionBlacklistService sessionBlacklistService,
             EmailVerificationOtpService emailVerificationOtpService,
             OtpDeliveryService otpDeliveryService,
             AuditService auditService,
+            AuthMetricsService authMetricsService,
             Clock clock
     ) {
         this.userRepository = userRepository;
@@ -72,109 +78,136 @@ public class AuthService {
         this.refreshTokenService = refreshTokenService;
         this.temporaryCacheService = temporaryCacheService;
         this.tokenBlacklistService = tokenBlacklistService;
+        this.sessionBlacklistService = sessionBlacklistService;
         this.emailVerificationOtpService = emailVerificationOtpService;
         this.otpDeliveryService = otpDeliveryService;
         this.auditService = auditService;
+        this.authMetricsService = authMetricsService;
         this.clock = clock;
     }
 
     @Transactional
     public RegisterResponse register(RegisterRequest request, String clientIp) {
-        String normalizedEmail = normalizeEmail(request.email());
-        User existingUser = userRepository.findByEmail(normalizedEmail).orElse(null);
-        if (existingUser != null && existingUser.isEmailVerified()) {
-            auditService.recordEvent(AuditAction.REGISTER_FAILED, null, null, clientIp);
-            throw new ResourceConflictException("Email is already registered");
-        }
-        if (existingUser != null) {
-            existingUser.setPasswordHash(passwordEncoder.encode(request.password()));
-            clearFailedLoginState(existingUser);
-            userRepository.save(existingUser);
-            EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.reissueOtp(existingUser.getId());
-            otpDeliveryService.sendVerificationOtp(existingUser.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
-            auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_RESENT, existingUser.getId(), null, clientIp);
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            String normalizedEmail = normalizeEmail(request.email());
+            User existingUser = userRepository.findByEmail(normalizedEmail).orElse(null);
+            if (existingUser != null && existingUser.isEmailVerified()) {
+                outcome = "already_registered";
+                auditService.recordEvent(AuditAction.REGISTER_FAILED, null, null, clientIp);
+                throw new ResourceConflictException("Email is already registered");
+            }
+            if (existingUser != null) {
+                existingUser.setPasswordHash(passwordEncoder.encode(request.password()));
+                clearFailedLoginState(existingUser);
+                userRepository.save(existingUser);
+                EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.reissueOtp(existingUser.getId());
+                otpDeliveryService.sendVerificationOtp(existingUser.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
+                auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_RESENT, existingUser.getId(), null, clientIp);
+                outcome = "pending_verification";
+                return new RegisterResponse(
+                        existingUser.getId(),
+                        existingUser.getEmail(),
+                        "Registration is pending email verification. A fresh OTP has been sent.",
+                        existingUser.getCreatedAt(),
+                        true,
+                        otpIssueResult.expiresInSeconds(),
+                        otpIssueResult.resendAvailableInSeconds()
+                );
+            }
+
+            User user = new User();
+            user.setEmail(normalizedEmail);
+            user.setPasswordHash(passwordEncoder.encode(request.password()));
+            user.setRole(UserRole.USER);
+            user.setEmailVerified(false);
+            user.setEmailVerifiedAt(null);
+            clearFailedLoginState(user);
+            User savedUser = userRepository.save(user);
+            EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.issueOtp(savedUser.getId());
+            otpDeliveryService.sendVerificationOtp(savedUser.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
+            auditService.recordEvent(AuditAction.REGISTER_SUCCESS, savedUser.getId(), null, clientIp);
+            auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_SENT, savedUser.getId(), null, clientIp);
+
+            log.info("User registered successfully with userId={}", savedUser.getId());
+            outcome = "success";
             return new RegisterResponse(
-                    existingUser.getId(),
-                    existingUser.getEmail(),
-                    "Registration is pending email verification. A fresh OTP has been sent.",
-                    existingUser.getCreatedAt(),
+                    savedUser.getId(),
+                    savedUser.getEmail(),
+                    "Registration successful. Verify the OTP within 3 minutes to activate the account.",
+                    savedUser.getCreatedAt(),
                     true,
                     otpIssueResult.expiresInSeconds(),
                     otpIssueResult.resendAvailableInSeconds()
             );
+        } finally {
+            authMetricsService.recordOperation("register", outcome, sample);
         }
-
-        User user = new User();
-        user.setEmail(normalizedEmail);
-        user.setPasswordHash(passwordEncoder.encode(request.password()));
-        user.setRole(UserRole.USER);
-        user.setEmailVerified(false);
-        user.setEmailVerifiedAt(null);
-        clearFailedLoginState(user);
-        User savedUser = userRepository.save(user);
-        EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.issueOtp(savedUser.getId());
-        otpDeliveryService.sendVerificationOtp(savedUser.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
-        auditService.recordEvent(AuditAction.REGISTER_SUCCESS, savedUser.getId(), null, clientIp);
-        auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_SENT, savedUser.getId(), null, clientIp);
-
-        log.info("User registered successfully with userId={}", savedUser.getId());
-        return new RegisterResponse(
-                savedUser.getId(),
-                savedUser.getEmail(),
-                "Registration successful. Verify the OTP within 3 minutes to activate the account.",
-                savedUser.getCreatedAt(),
-                true,
-                otpIssueResult.expiresInSeconds(),
-                otpIssueResult.resendAvailableInSeconds()
-        );
     }
 
     @Transactional
     public LoginResponse login(LoginRequest request, String clientIp) {
-        String normalizedEmail = normalizeEmail(request.email());
-        User user = userRepository.findByEmailForUpdate(normalizedEmail)
-                .orElse(null);
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            String normalizedEmail = normalizeEmail(request.email());
+            User user = userRepository.findByEmailForUpdate(normalizedEmail)
+                    .orElse(null);
 
-        if (user == null) {
-            auditService.recordEvent(AuditAction.LOGIN_FAILED, null, request.deviceId(), clientIp);
-            throw new UnauthorizedException("Invalid credentials");
-        }
-
-        Instant now = Instant.now(clock);
-        if (isLockActive(user, now)) {
-            auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
-            throw new AccountLockedException(buildLockMessage(user.getLockUntil()));
-        }
-
-        if (hasExpiredLock(user, now)) {
-            clearExpiredLock(user);
-        }
-
-        if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
-            boolean accountLocked = handleFailedLogin(user, now);
-            auditService.recordEvent(AuditAction.LOGIN_FAILED, user.getId(), request.deviceId(), clientIp);
-            if (accountLocked) {
-                auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
+            if (user == null) {
+                outcome = "invalid_credentials";
+                auditService.recordEvent(AuditAction.LOGIN_FAILED, null, request.deviceId(), clientIp);
+                throw new UnauthorizedException("Invalid credentials");
             }
-            throw new UnauthorizedException("Invalid credentials");
+
+            Instant now = Instant.now(clock);
+            if (isLockActive(user, now)) {
+                outcome = "account_locked";
+                auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
+                throw new AccountLockedException(buildLockMessage(user.getLockUntil()));
+            }
+
+            if (hasExpiredLock(user, now)) {
+                clearExpiredLock(user);
+            }
+
+            if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+                boolean accountLocked = handleFailedLogin(user, now);
+                outcome = accountLocked ? "account_locked" : "invalid_credentials";
+                auditService.recordEvent(AuditAction.LOGIN_FAILED, user.getId(), request.deviceId(), clientIp);
+                if (accountLocked) {
+                    auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
+                }
+                throw new UnauthorizedException("Invalid credentials");
+            }
+
+            if (!user.isEmailVerified()) {
+                outcome = "email_verification_required";
+                auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_REQUIRED, user.getId(), request.deviceId(), clientIp);
+                throw new ForbiddenException("Email verification is required before logging in");
+            }
+
+            resetFailedLoginState(user);
+            // Access tokens stay stateless while refresh-token lifecycle is delegated to RefreshTokenService.
+            String refreshToken = refreshTokenService.generateRawRefreshToken();
+            RefreshTokenService.StoredSession storedSession = refreshTokenService.storeRefreshToken(
+                    user,
+                    refreshToken,
+                    request.deviceId(),
+                    clientIp
+            );
+            String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getRole().name(), storedSession.sessionId());
+            temporaryCacheService.cacheLastLoginMetadata(user.getId(), clientIp);
+            refreshTokenService.deleteExpiredRefreshTokens();
+            auditService.recordEvent(AuditAction.LOGIN_SUCCESS, user.getId(), request.deviceId(), clientIp);
+
+            log.info("User login succeeded for userId={} from ip={}", user.getId(), clientIp);
+            outcome = "success";
+            return new LoginResponse(accessToken, refreshToken, "Bearer", jwtUtil.accessTokenTtlSeconds());
+        } finally {
+            authMetricsService.recordOperation("login", outcome, sample);
         }
-
-        if (!user.isEmailVerified()) {
-            auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_REQUIRED, user.getId(), request.deviceId(), clientIp);
-            throw new ForbiddenException("Email verification is required before logging in");
-        }
-
-        resetFailedLoginState(user);
-        // Access tokens stay stateless while refresh-token lifecycle is delegated to RefreshTokenService.
-        String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getRole().name());
-        String refreshToken = refreshTokenService.generateRawRefreshToken();
-        refreshTokenService.storeRefreshToken(user, refreshToken, request.deviceId());
-        temporaryCacheService.cacheLastLoginMetadata(user.getId(), clientIp);
-        refreshTokenService.deleteExpiredRefreshTokens();
-        auditService.recordEvent(AuditAction.LOGIN_SUCCESS, user.getId(), request.deviceId(), clientIp);
-
-        log.info("User login succeeded for userId={} from ip={}", user.getId(), clientIp);
-        return new LoginResponse(accessToken, refreshToken, "Bearer", jwtUtil.accessTokenTtlSeconds());
     }
 
     @Transactional
@@ -184,113 +217,161 @@ public class AuthService {
 
     @Transactional
     public EmailVerificationStatusResponse verifyEmailOtp(VerifyEmailOtpRequest request, String clientIp) {
-        User user = userRepository.findByEmailForUpdate(normalizeEmail(request.email()))
-                .orElseThrow(() -> new BadRequestException("Invalid verification request"));
-        if (user.isEmailVerified()) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            User user = userRepository.findByEmailForUpdate(normalizeEmail(request.email()))
+                    .orElseThrow(() -> new BadRequestException("Invalid verification request"));
+            if (user.isEmailVerified()) {
+                outcome = "already_verified";
+                return new EmailVerificationStatusResponse(
+                        user.getEmail(),
+                        "Email is already verified",
+                        true,
+                        user.getEmailVerifiedAt(),
+                        0,
+                        0
+                );
+            }
+
+            try {
+                emailVerificationOtpService.verifyOtp(user.getId(), request.otp());
+            } catch (BadRequestException ex) {
+                outcome = "invalid_otp";
+                auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_FAILED, user.getId(), request.deviceId(), clientIp);
+                throw ex;
+            }
+
+            Instant verifiedAt = Instant.now(clock);
+            user.setEmailVerified(true);
+            user.setEmailVerifiedAt(verifiedAt);
+            userRepository.save(user);
+            auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_SUCCESS, user.getId(), request.deviceId(), clientIp);
+            outcome = "success";
             return new EmailVerificationStatusResponse(
                     user.getEmail(),
-                    "Email is already verified",
+                    "Email verified successfully",
                     true,
-                    user.getEmailVerifiedAt(),
+                    verifiedAt,
                     0,
                     0
             );
+        } finally {
+            authMetricsService.recordOperation("verify_email_otp", outcome, sample);
         }
-
-        try {
-            emailVerificationOtpService.verifyOtp(user.getId(), request.otp());
-        } catch (BadRequestException ex) {
-            auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_FAILED, user.getId(), request.deviceId(), clientIp);
-            throw ex;
-        }
-
-        Instant verifiedAt = Instant.now(clock);
-        user.setEmailVerified(true);
-        user.setEmailVerifiedAt(verifiedAt);
-        userRepository.save(user);
-        auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_SUCCESS, user.getId(), request.deviceId(), clientIp);
-        return new EmailVerificationStatusResponse(
-                user.getEmail(),
-                "Email verified successfully",
-                true,
-                verifiedAt,
-                0,
-                0
-        );
     }
 
     @Transactional
     public EmailVerificationStatusResponse resendVerificationOtp(ResendVerificationOtpRequest request, String clientIp) {
-        User user = userRepository.findByEmailForUpdate(normalizeEmail(request.email()))
-                .orElseThrow(() -> new BadRequestException("Invalid resend request"));
-        if (user.isEmailVerified()) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            User user = userRepository.findByEmailForUpdate(normalizeEmail(request.email()))
+                    .orElseThrow(() -> new BadRequestException("Invalid resend request"));
+            if (user.isEmailVerified()) {
+                outcome = "already_verified";
+                return new EmailVerificationStatusResponse(
+                        user.getEmail(),
+                        "Email is already verified",
+                        true,
+                        user.getEmailVerifiedAt(),
+                        0,
+                        0
+                );
+            }
+
+            EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.reissueOtp(user.getId());
+            otpDeliveryService.sendVerificationOtp(user.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
+            auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_RESENT, user.getId(), null, clientIp);
+            outcome = "success";
             return new EmailVerificationStatusResponse(
                     user.getEmail(),
-                    "Email is already verified",
-                    true,
-                    user.getEmailVerifiedAt(),
-                    0,
-                    0
+                    "A new OTP has been sent. It expires in 3 minutes.",
+                    false,
+                    null,
+                    otpIssueResult.expiresInSeconds(),
+                    otpIssueResult.resendAvailableInSeconds()
             );
+        } finally {
+            authMetricsService.recordOperation("resend_verification_otp", outcome, sample);
         }
-
-        EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.reissueOtp(user.getId());
-        otpDeliveryService.sendVerificationOtp(user.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
-        auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_RESENT, user.getId(), null, clientIp);
-        return new EmailVerificationStatusResponse(
-                user.getEmail(),
-                "A new OTP has been sent. It expires in 3 minutes.",
-                false,
-                null,
-                otpIssueResult.expiresInSeconds(),
-                otpIssueResult.resendAvailableInSeconds()
-        );
     }
 
     @Transactional
     public void logout(LogoutRequest request, AuthenticatedUser authenticatedUser, String clientIp) {
-        java.util.UUID authenticatedUserId = authenticatedUser == null ? null : authenticatedUser.getUserId();
-        if (authenticatedUser != null && authenticatedUser.getTokenId() != null && authenticatedUser.getTokenExpiresAt() != null) {
-            // The access token is blacklisted independently from refresh-token revocation to cover both token types.
-            long ttlSeconds = Math.max(0, authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond());
-            tokenBlacklistService.blacklist(authenticatedUser.getTokenId(), java.time.Duration.ofSeconds(ttlSeconds));
-        }
-        RefreshToken refreshToken;
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
         try {
-            refreshToken = refreshTokenService.revokeRefreshToken(request.refreshToken(), authenticatedUserId);
-        } catch (UnauthorizedException ex) {
-            auditService.recordEvent(AuditAction.LOGOUT_FAILED, authenticatedUserId, null, clientIp);
-            throw ex;
+            java.util.UUID authenticatedUserId = authenticatedUser == null ? null : authenticatedUser.getUserId();
+            if (authenticatedUser != null && authenticatedUser.getTokenId() != null && authenticatedUser.getTokenExpiresAt() != null) {
+                // The access token is blacklisted independently from refresh-token revocation to cover both token types.
+                long ttlSeconds = Math.max(0, authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond());
+                tokenBlacklistService.blacklist(authenticatedUser.getTokenId(), java.time.Duration.ofSeconds(ttlSeconds));
+            }
+            RefreshToken refreshToken;
+            try {
+                refreshToken = refreshTokenService.revokeRefreshToken(request.refreshToken(), authenticatedUserId);
+            } catch (UnauthorizedException ex) {
+                outcome = "invalid_refresh_token";
+                auditService.recordEvent(AuditAction.LOGOUT_FAILED, authenticatedUserId, null, clientIp);
+                throw ex;
+            }
+            auditService.recordEvent(
+                    AuditAction.LOGOUT,
+                    refreshToken.getUser().getId(),
+                    refreshToken.getDeviceId(),
+                    clientIp
+            );
+            outcome = "success";
+        } finally {
+            authMetricsService.recordOperation("logout", outcome, sample);
         }
-        auditService.recordEvent(
-                AuditAction.LOGOUT,
-                refreshToken.getUser().getId(),
-                refreshToken.getDeviceId(),
-                clientIp
-        );
     }
 
     @Transactional
-    public void changePassword(java.util.UUID authenticatedUserId, PasswordChangeRequest request, String clientIp) {
-        User user = userRepository.findByIdForUpdate(authenticatedUserId)
-                .orElseThrow(() -> new UnauthorizedException("Authenticated user not found"));
+    public void changePassword(AuthenticatedUser authenticatedUser, PasswordChangeRequest request, String clientIp) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            User user = userRepository.findByIdForUpdate(authenticatedUser.getUserId())
+                    .orElseThrow(() -> new UnauthorizedException("Authenticated user not found"));
 
-        if (!passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
-            auditService.recordEvent(AuditAction.PASSWORD_CHANGE_FAILED, user.getId(), request.deviceId(), clientIp);
-            throw new UnauthorizedException("Current password is invalid");
+            if (!passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
+                outcome = "invalid_current_password";
+                auditService.recordEvent(AuditAction.PASSWORD_CHANGE_FAILED, user.getId(), request.deviceId(), clientIp);
+                throw new UnauthorizedException("Current password is invalid");
+            }
+
+            if (request.currentPassword().equals(request.newPassword())) {
+                outcome = "password_reuse";
+                auditService.recordEvent(AuditAction.PASSWORD_CHANGE_FAILED, user.getId(), request.deviceId(), clientIp);
+                throw new BadRequestException("New password must be different from the current password");
+            }
+
+            user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+            resetFailedLoginState(user);
+            userRepository.save(user);
+            // Rotating the password invalidates every active refresh token for the user.
+            refreshTokenService.revokeAllTokensForUser(user.getId());
+            if (authenticatedUser.getTokenId() != null && authenticatedUser.getTokenExpiresAt() != null) {
+                long ttlSeconds = Math.max(
+                        0,
+                        authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond()
+                );
+                tokenBlacklistService.blacklist(authenticatedUser.getTokenId(), Duration.ofSeconds(ttlSeconds));
+            }
+            if (authenticatedUser.getSessionId() != null && authenticatedUser.getTokenExpiresAt() != null) {
+                long ttlSeconds = Math.max(
+                        0,
+                        authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond()
+                );
+                sessionBlacklistService.blacklist(authenticatedUser.getSessionId(), Duration.ofSeconds(ttlSeconds));
+            }
+            auditService.recordEvent(AuditAction.PASSWORD_CHANGE, user.getId(), request.deviceId(), clientIp);
+            outcome = "success";
+        } finally {
+            authMetricsService.recordOperation("change_password", outcome, sample);
         }
-
-        if (request.currentPassword().equals(request.newPassword())) {
-            auditService.recordEvent(AuditAction.PASSWORD_CHANGE_FAILED, user.getId(), request.deviceId(), clientIp);
-            throw new BadRequestException("New password must be different from the current password");
-        }
-
-        user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
-        resetFailedLoginState(user);
-        userRepository.save(user);
-        // Rotating the password invalidates every active refresh token for the user.
-        refreshTokenService.revokeAllTokensForUser(user.getId());
-        auditService.recordEvent(AuditAction.PASSWORD_CHANGE, user.getId(), request.deviceId(), clientIp);
     }
 
     private boolean handleFailedLogin(User user, Instant currentTime) {

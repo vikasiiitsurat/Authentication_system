@@ -27,16 +27,23 @@ public class RateLimiterService {
 
     private final StringRedisTemplate redisTemplate;
     private final RateLimitProperties rateLimitProperties;
+    private final AuthMetricsService authMetricsService;
 
-    public RateLimiterService(StringRedisTemplate redisTemplate, RateLimitProperties rateLimitProperties) {
+    public RateLimiterService(
+            StringRedisTemplate redisTemplate,
+            RateLimitProperties rateLimitProperties,
+            AuthMetricsService authMetricsService
+    ) {
         this.redisTemplate = redisTemplate;
         this.rateLimitProperties = rateLimitProperties;
+        this.authMetricsService = authMetricsService;
     }
 
     public void validateLoginRateLimit(String email, String ipAddress) {
         String key = LOGIN_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
         validateLimit(
                 key,
+                "login",
                 rateLimitProperties.getLogin(),
                 "Too many login attempts. Please try again later."
         );
@@ -46,6 +53,7 @@ public class RateLimiterService {
         String key = OTP_GENERATION_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
         validateLimit(
                 key,
+                "otp_generation",
                 rateLimitProperties.getOtpGeneration(),
                 "Too many OTP requests. Please wait before requesting another code."
         );
@@ -55,25 +63,35 @@ public class RateLimiterService {
         String key = OTP_VERIFICATION_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
         validateLimit(
                 key,
+                "otp_verification",
                 rateLimitProperties.getOtpVerification(),
                 "Too many OTP verification attempts. Please request a new code or try again later."
         );
     }
 
-    private void validateLimit(String key, RateLimitProperties.Limit limit, String errorMessage) {
-        Long currentCount = redisTemplate.execute(
-                INCREMENT_WITH_TTL_SCRIPT,
-                List.of(key),
-                String.valueOf(limit.getWindowSeconds())
-        );
+    private void validateLimit(String key, String limiter, RateLimitProperties.Limit limit, String errorMessage) {
+        Long currentCount;
+        try {
+            currentCount = redisTemplate.execute(
+                    INCREMENT_WITH_TTL_SCRIPT,
+                    List.of(key),
+                    String.valueOf(limit.getWindowSeconds())
+            );
+        } catch (RuntimeException ex) {
+            authMetricsService.recordRateLimitDecision(limiter, "backend_error");
+            throw ex;
+        }
 
         if (currentCount == null) {
+            authMetricsService.recordRateLimitDecision(limiter, "backend_error");
             throw new IllegalStateException("Failed to evaluate rate limit");
         }
 
         if (currentCount > limit.getMaxAttempts()) {
+            authMetricsService.recordRateLimitDecision(limiter, "rejected");
             throw new TooManyRequestsException(errorMessage);
         }
+        authMetricsService.recordRateLimitDecision(limiter, "allowed");
     }
 
     private String normalize(String value) {

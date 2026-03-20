@@ -12,11 +12,13 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RateLimiterServiceTest {
 
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+    private final AuthMetricsService authMetricsService = mock(AuthMetricsService.class);
     private RateLimiterService rateLimiterService;
 
     @BeforeEach
@@ -28,7 +30,7 @@ class RateLimiterServiceTest {
         properties.getOtpGeneration().setWindowSeconds(900);
         properties.getOtpVerification().setMaxAttempts(10);
         properties.getOtpVerification().setWindowSeconds(300);
-        rateLimiterService = new RateLimiterService(redisTemplate, properties);
+        rateLimiterService = new RateLimiterService(redisTemplate, properties, authMetricsService);
     }
 
     @Test
@@ -36,6 +38,7 @@ class RateLimiterServiceTest {
         when(redisTemplate.execute(any(), anyList(), anyString())).thenReturn(5L);
 
         assertDoesNotThrow(() -> rateLimiterService.validateOtpGenerationRateLimit("user@example.com", "127.0.0.1"));
+        verify(authMetricsService).recordRateLimitDecision("otp_generation", "allowed");
     }
 
     @Test
@@ -46,6 +49,7 @@ class RateLimiterServiceTest {
                 TooManyRequestsException.class,
                 () -> rateLimiterService.validateOtpGenerationRateLimit("user@example.com", "127.0.0.1")
         );
+        verify(authMetricsService).recordRateLimitDecision("otp_generation", "rejected");
     }
 
     @Test
@@ -56,5 +60,6 @@ class RateLimiterServiceTest {
                 TooManyRequestsException.class,
                 () -> rateLimiterService.validateOtpVerificationRateLimit("user@example.com", "127.0.0.1")
         );
+        verify(authMetricsService).recordRateLimitDecision("otp_verification", "rejected");
     }
 }

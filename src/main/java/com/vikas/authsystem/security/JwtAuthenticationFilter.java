@@ -29,10 +29,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
     private final JwtUtil jwtUtil;
     private final TokenBlacklistService tokenBlacklistService;
+    private final SessionBlacklistService sessionBlacklistService;
 
-    public JwtAuthenticationFilter(JwtUtil jwtUtil, TokenBlacklistService tokenBlacklistService) {
+    public JwtAuthenticationFilter(
+            JwtUtil jwtUtil,
+            TokenBlacklistService tokenBlacklistService,
+            SessionBlacklistService sessionBlacklistService
+    ) {
         this.jwtUtil = jwtUtil;
         this.tokenBlacklistService = tokenBlacklistService;
+        this.sessionBlacklistService = sessionBlacklistService;
     }
 
     @Override
@@ -56,8 +62,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             UUID userId = extractUserId(claims);
             UserRole role = extractRole(claims);
+            UUID sessionId = extractSessionId(claims);
+            if (sessionBlacklistService.isBlacklisted(sessionId)) {
+                filterChain.doFilter(request, response);
+                return;
+            }
             Instant tokenExpiresAt = claims.getExpiration() == null ? null : claims.getExpiration().toInstant();
-            AuthenticatedUser authenticatedUser = new AuthenticatedUser(userId, role, jti, tokenExpiresAt);
+            AuthenticatedUser authenticatedUser = new AuthenticatedUser(userId, role, sessionId, jti, tokenExpiresAt);
             UsernamePasswordAuthenticationToken authentication =
                     new UsernamePasswordAuthenticationToken(
                             authenticatedUser,
@@ -88,6 +99,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return UUID.fromString(resolvedUserId);
         } catch (IllegalArgumentException ex) {
             throw new JwtException("JWT contains an invalid user identifier", ex);
+        }
+    }
+
+    private UUID extractSessionId(Claims claims) {
+        String sessionIdClaim = claims.get("session_id", String.class);
+        if (sessionIdClaim == null || sessionIdClaim.isBlank()) {
+            throw new JwtException("JWT is missing the session identifier");
+        }
+        try {
+            return UUID.fromString(sessionIdClaim);
+        } catch (IllegalArgumentException ex) {
+            throw new JwtException("JWT contains an invalid session identifier", ex);
         }
     }
 

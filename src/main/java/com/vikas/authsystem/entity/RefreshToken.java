@@ -29,11 +29,23 @@ public class RefreshToken {
     @Column(name = "token_hash", nullable = false, length = 128)
     private String tokenHash;
 
+    @Column(name = "session_id", nullable = false)
+    private UUID sessionId;
+
     @Column(name = "device_id", nullable = false, length = 128)
     private String deviceId;
 
     @Column(name = "expiry_date", nullable = false)
     private Instant expiryDate;
+
+    @Column(name = "session_started_at", nullable = false, updatable = false)
+    private Instant sessionStartedAt;
+
+    @Column(name = "last_used_at", nullable = false)
+    private Instant lastUsedAt;
+
+    @Column(name = "last_seen_ip", nullable = false, length = 64)
+    private String lastSeenIp;
 
     @Column(name = "revoked_at")
     private Instant revokedAt;
@@ -69,6 +81,14 @@ public class RefreshToken {
         this.tokenHash = tokenHash;
     }
 
+    public UUID getSessionId() {
+        return sessionId;
+    }
+
+    public void setSessionId(UUID sessionId) {
+        this.sessionId = sessionId;
+    }
+
     public String getDeviceId() {
         return deviceId;
     }
@@ -83,6 +103,30 @@ public class RefreshToken {
 
     public void setExpiryDate(Instant expiryDate) {
         this.expiryDate = expiryDate;
+    }
+
+    public Instant getSessionStartedAt() {
+        return sessionStartedAt;
+    }
+
+    public void setSessionStartedAt(Instant sessionStartedAt) {
+        this.sessionStartedAt = sessionStartedAt;
+    }
+
+    public Instant getLastUsedAt() {
+        return lastUsedAt;
+    }
+
+    public void setLastUsedAt(Instant lastUsedAt) {
+        this.lastUsedAt = lastUsedAt;
+    }
+
+    public String getLastSeenIp() {
+        return lastSeenIp;
+    }
+
+    public void setLastSeenIp(String lastSeenIp) {
+        this.lastSeenIp = lastSeenIp;
     }
 
     public Instant getCreatedAt() {

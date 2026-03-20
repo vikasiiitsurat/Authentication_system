@@ -122,7 +122,13 @@ class UserQueryServiceAuthorizationTest {
     }
 
     private void authenticate(UUID userId, UserRole role) {
-        AuthenticatedUser authenticatedUser = new AuthenticatedUser(userId, role, "token-id", Instant.now().plusSeconds(900));
+        AuthenticatedUser authenticatedUser = new AuthenticatedUser(
+                userId,
+                role,
+                UUID.randomUUID(),
+                "token-id",
+                Instant.now().plusSeconds(900)
+        );
         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                 authenticatedUser,
                 null,
