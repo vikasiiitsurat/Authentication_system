@@ -75,6 +75,16 @@ mvn test
 
 The API will start on `http://localhost:8080` unless `SERVER_PORT` is overridden.
 
+OpenAPI docs are available at:
+
+- `http://localhost:8080/swagger-ui.html`
+- `http://localhost:8080/v3/api-docs`
+
+Monitoring endpoints are available at:
+
+- `http://localhost:8080/actuator/health`
+- `http://localhost:8080/actuator/prometheus`
+
 ## Environment Variables Configuration
 
 Use placeholders like the following instead of committing real secrets:
@@ -112,6 +122,8 @@ MAIL_SMTP_AUTH=true
 MAIL_SMTP_STARTTLS_ENABLED=true
 MAIL_SMTP_STARTTLS_REQUIRED=true
 
+PERMIT_PROMETHEUS_SCRAPE=false
+
 LOGIN_RATE_LIMIT_ATTEMPTS=10
 LOGIN_RATE_LIMIT_WINDOW_SECONDS=60
 OTP_GENERATION_RATE_LIMIT_ATTEMPTS=5
@@ -126,6 +138,7 @@ OTP_VERIFICATION_RATE_LIMIT_WINDOW_SECONDS=300
 - For local development without real emails, set `OTP_DELIVERY_MODE=log`.
 - Prefer setting `DB_URL` directly if you want full control over the PostgreSQL connection string.
 - Do not keep real credentials inside `application.yml` for a public repository.
+- Keep `PERMIT_PROMETHEUS_SCRAPE=false` unless Prometheus is scraping from a trusted network path.
 
 ## Email (SMTP) Setup
 
@@ -237,6 +250,61 @@ POST /api/auth/refresh
 - Role-based authorization with method-level checks
 - Audit logs for registration, login, refresh, logout, password change, and verification events
 
+## Monitoring Stack
+
+The project already emits Micrometer metrics for auth operations, audit persistence, and rate-limit decisions. A local monitoring stack is included in the repository under `monitoring/`:
+
+- Prometheus scrape config and auth-focused alert rules
+- Alertmanager base config
+- Grafana datasource provisioning
+- A prebuilt `Auth System Overview` dashboard
+
+### Included metrics
+
+- `auth.operation.total`
+- `auth.operation.duration`
+- `auth.rate_limit.total`
+- `auth.audit.event.total`
+- `auth.audit.persistence.duration`
+
+### Start the monitoring stack locally
+
+1. Start the application with Prometheus scraping temporarily enabled:
+
+```bash
+PERMIT_PROMETHEUS_SCRAPE=true mvn spring-boot:run
+```
+
+On PowerShell:
+
+```powershell
+$env:PERMIT_PROMETHEUS_SCRAPE='true'
+mvn spring-boot:run
+```
+
+2. In another terminal, start Prometheus, Alertmanager, and Grafana:
+
+```bash
+docker compose -f docker-compose.monitoring.yml up -d
+```
+
+3. Open the monitoring tools:
+
+- Grafana: `http://localhost:3000`
+- Prometheus: `http://localhost:9090`
+- Alertmanager: `http://localhost:9093`
+
+Default Grafana credentials:
+
+- Username: `admin`
+- Password: `admin`
+
+### Notes
+
+- The Prometheus config scrapes `host.docker.internal:8080`. If your app runs on a different host or port, update `monitoring/prometheus/prometheus.yml`.
+- The Alertmanager receiver is intentionally a placeholder `default-null` receiver. Replace it with email, Slack, or webhook routing before using it for real notifications.
+- Keep the Prometheus scrape endpoint protected in production unless it is exposed only on a trusted internal network.
+
 ## How to Test Using Postman
 
 ### Suggested Postman variables
@@ -297,11 +365,10 @@ authesystem1/
 
 ## Future Improvements
 
-- Add Swagger/OpenAPI documentation
 - Add Docker Compose for PostgreSQL and Redis
 - Add forgot-password and password-reset flows
 - Add email templates with HTML formatting
-- Add monitoring and metrics for auth events
+- Add distributed tracing for auth requests and downstream dependencies
 - Add CI pipeline for build, test, and lint checks
 
 ## Author

@@ -3,15 +3,19 @@ package com.vikas.authsystem.service;
 import com.vikas.authsystem.dto.LoginRequest;
 import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.LogoutRequest;
+import com.vikas.authsystem.dto.ForgotPasswordRequest;
 import com.vikas.authsystem.dto.PasswordChangeRequest;
+import com.vikas.authsystem.dto.PasswordResetRequestResponse;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
 import com.vikas.authsystem.dto.ResendVerificationOtpRequest;
+import com.vikas.authsystem.dto.ResetPasswordRequest;
 import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
 import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
 import com.vikas.authsystem.entity.User;
 import com.vikas.authsystem.entity.UserRole;
 import com.vikas.authsystem.exception.AccountLockedException;
+import com.vikas.authsystem.exception.BadRequestException;
 import com.vikas.authsystem.exception.ForbiddenException;
 import com.vikas.authsystem.exception.UnauthorizedException;
 import com.vikas.authsystem.repository.UserRepository;
@@ -40,6 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -59,6 +64,7 @@ class AuthServiceTest {
     private final TokenBlacklistService tokenBlacklistService = mock(TokenBlacklistService.class);
     private final SessionBlacklistService sessionBlacklistService = mock(SessionBlacklistService.class);
     private final EmailVerificationOtpService emailVerificationOtpService = mock(EmailVerificationOtpService.class);
+    private final PasswordResetOtpService passwordResetOtpService = mock(PasswordResetOtpService.class);
     private final OtpDeliveryService otpDeliveryService = mock(OtpDeliveryService.class);
     private final AuditService auditService = mock(AuditService.class);
     private final AuthMetricsService authMetricsService = mock(AuthMetricsService.class);
@@ -77,6 +83,7 @@ class AuthServiceTest {
                 tokenBlacklistService,
                 sessionBlacklistService,
                 emailVerificationOtpService,
+                passwordResetOtpService,
                 otpDeliveryService,
                 auditService,
                 authMetricsService,
@@ -102,7 +109,8 @@ class AuthServiceTest {
                 () -> authService.login(new LoginRequest(user.getEmail(), "bad-password", "device-1"), "127.0.0.1")
         );
 
-        assertTrue(exception.getMessage().contains(user.getLockUntil().toString()));
+        assertEquals("Account is locked. Try again in 2 minutes.", exception.getMessage());
+        assertEquals(120, exception.getRetryAfterSeconds());
         verify(passwordEncoder, never()).matches(anyString(), anyString());
         verify(userRepository, never()).save(any(User.class));
         verify(authMetricsService).recordOperation("login", "account_locked", null);
@@ -166,18 +174,21 @@ class AuthServiceTest {
     @MethodSource("lockEscalationCases")
     void failedLoginAppliesEscalatingLockDurations(
             int existingFailedAttempts,
-            long expectedLockSeconds
+            long expectedLockSeconds,
+            String expectedRetryWindow
     ) {
         User user = baseUser();
         user.setFailedAttempts(existingFailedAttempts);
         when(userRepository.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("wrong-password", user.getPasswordHash())).thenReturn(false);
 
-        assertThrows(
-                UnauthorizedException.class,
+        AccountLockedException exception = assertThrows(
+                AccountLockedException.class,
                 () -> authService.login(new LoginRequest(user.getEmail(), "wrong-password", "device-1"), "127.0.0.1")
         );
 
+        assertEquals("Account is locked. Try again in " + expectedRetryWindow + ".", exception.getMessage());
+        assertEquals(expectedLockSeconds, exception.getRetryAfterSeconds());
         assertEquals(existingFailedAttempts + 1, user.getFailedAttempts());
         assertEquals(FIXED_NOW, user.getLastFailedAttempt());
         assertEquals(FIXED_NOW.plusSeconds(expectedLockSeconds), user.getLockUntil());
@@ -230,10 +241,93 @@ class AuthServiceTest {
         );
 
         assertEquals("new-password-hash", user.getPasswordHash());
+        assertEquals(FIXED_NOW, user.getPasswordChangedAt());
         verify(refreshTokenService).revokeAllTokensForUser(user.getId());
         verify(tokenBlacklistService).blacklist("access-jti", Duration.ofSeconds(300));
         verify(sessionBlacklistService).blacklist(authenticatedUser.getSessionId(), Duration.ofSeconds(300));
         verify(authMetricsService).recordOperation("change_password", "success", null);
+    }
+
+    @Test
+    void requestPasswordResetDispatchesOtpForVerifiedAccounts() {
+        User user = baseUser();
+        when(userRepository.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
+        when(passwordResetOtpService.requestOtp(user.getId()))
+                .thenReturn(new PasswordResetOtpService.OtpDispatchResult(true, "654321", 600, 60));
+        when(passwordResetOtpService.expiresInSeconds()).thenReturn(600L);
+        when(passwordResetOtpService.resendCooldownSeconds()).thenReturn(60L);
+
+        PasswordResetRequestResponse response = authService.requestPasswordReset(
+                new ForgotPasswordRequest(user.getEmail()),
+                "127.0.0.1"
+        );
+
+        assertEquals(
+                "If the account exists and is eligible, a password reset code will be sent. The code expires in 10 minutes.",
+                response.message()
+        );
+        assertEquals(600L, response.expiresInSeconds());
+        assertEquals(60L, response.resendAvailableInSeconds());
+        verify(otpDeliveryService).sendPasswordResetOtp(user.getEmail(), "654321", 600);
+        verify(authMetricsService).recordOperation("request_password_reset", "dispatched", null);
+    }
+
+    @Test
+    void requestPasswordResetDoesNotExposeUnknownAccounts() {
+        when(userRepository.findByEmailForUpdate("missing@example.com")).thenReturn(Optional.empty());
+        when(passwordResetOtpService.expiresInSeconds()).thenReturn(600L);
+        when(passwordResetOtpService.resendCooldownSeconds()).thenReturn(60L);
+
+        PasswordResetRequestResponse response = authService.requestPasswordReset(
+                new ForgotPasswordRequest("missing@example.com"),
+                "127.0.0.1"
+        );
+
+        assertEquals("missing@example.com", response.email());
+        verify(passwordResetOtpService, never()).requestOtp(any(UUID.class));
+        verify(otpDeliveryService, never()).sendPasswordResetOtp(anyString(), anyString(), anyLong());
+        verify(authMetricsService).recordOperation("request_password_reset", "accepted", null);
+    }
+
+    @Test
+    void resetPasswordRotatesPasswordAndRevokesAllSessions() {
+        User user = baseUser();
+        when(userRepository.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
+        when(passwordResetOtpService.verifyOtp(user.getId(), "123456"))
+                .thenReturn(new PasswordResetOtpService.OtpVerificationResult(true, 540));
+        when(passwordEncoder.matches("new-password-123", user.getPasswordHash())).thenReturn(false);
+        when(passwordEncoder.encode("new-password-123")).thenReturn("new-password-hash");
+
+        authService.resetPassword(
+                new ResetPasswordRequest(user.getEmail(), "123456", "new-password-123", "device-1"),
+                "127.0.0.1"
+        );
+
+        assertEquals("new-password-hash", user.getPasswordHash());
+        assertEquals(FIXED_NOW, user.getPasswordChangedAt());
+        verify(refreshTokenService).revokeAllTokensForUser(user.getId());
+        verify(authMetricsService).recordOperation("reset_password", "success", null);
+    }
+
+    @Test
+    void resetPasswordRejectsPasswordReuse() {
+        User user = baseUser();
+        when(userRepository.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
+        when(passwordResetOtpService.verifyOtp(user.getId(), "123456"))
+                .thenReturn(new PasswordResetOtpService.OtpVerificationResult(true, 540));
+        when(passwordEncoder.matches("encoded-password", user.getPasswordHash())).thenReturn(true);
+
+        BadRequestException exception = assertThrows(
+                BadRequestException.class,
+                () -> authService.resetPassword(
+                        new ResetPasswordRequest(user.getEmail(), "123456", "encoded-password", "device-1"),
+                        "127.0.0.1"
+                )
+        );
+
+        assertEquals("New password must be different from the current password", exception.getMessage());
+        verify(refreshTokenService, never()).revokeAllTokensForUser(any(UUID.class));
+        verify(authMetricsService).recordOperation("reset_password", "password_reuse", null);
     }
 
     @Test
@@ -307,19 +401,60 @@ class AuthServiceTest {
                 "127.0.0.1"
         );
 
+        assertEquals("A verification OTP has been sent. It expires in 3 minutes.", response.message());
         assertEquals(180, response.expiresInSeconds());
         assertEquals(30, response.resendAvailableInSeconds());
         verify(otpDeliveryService).sendVerificationOtp(user.getEmail(), "111222", 180);
         verify(authMetricsService).recordOperation("resend_verification_otp", "success", null);
     }
 
+    @Test
+    void resendVerificationOtpDoesNotExposeMissingAccounts() {
+        when(userRepository.findByEmailForUpdate("missing@example.com")).thenReturn(Optional.empty());
+
+        EmailVerificationStatusResponse response = authService.resendVerificationOtp(
+                new ResendVerificationOtpRequest("missing@example.com"),
+                "127.0.0.1"
+        );
+
+        assertEquals("missing@example.com", response.email());
+        assertEquals(
+                "If the account exists and is pending verification, an OTP will be sent if resend rules allow it.",
+                response.message()
+        );
+        assertEquals(0, response.expiresInSeconds());
+        assertEquals(0, response.resendAvailableInSeconds());
+        verify(otpDeliveryService, never()).sendVerificationOtp(anyString(), anyString(), anyLong());
+        verify(authMetricsService).recordOperation("resend_verification_otp", "accepted", null);
+    }
+
+    @Test
+    void resendVerificationOtpDoesNotExposeVerifiedAccounts() {
+        User user = baseUser();
+        when(userRepository.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
+
+        EmailVerificationStatusResponse response = authService.resendVerificationOtp(
+                new ResendVerificationOtpRequest(user.getEmail()),
+                "127.0.0.1"
+        );
+
+        assertEquals(
+                "If the account exists and is pending verification, an OTP will be sent if resend rules allow it.",
+                response.message()
+        );
+        assertEquals(0, response.expiresInSeconds());
+        assertEquals(0, response.resendAvailableInSeconds());
+        verify(emailVerificationOtpService, never()).reissueOtp(any(UUID.class));
+        verify(authMetricsService).recordOperation("resend_verification_otp", "accepted", null);
+    }
+
     private static Stream<Arguments> lockEscalationCases() {
         return Stream.of(
-                Arguments.of(4, 5 * 60L),
-                Arguments.of(5, 10 * 60L),
-                Arguments.of(6, 40 * 60L),
-                Arguments.of(7, 24 * 60 * 60L),
-                Arguments.of(8, 24 * 60 * 60L)
+                Arguments.of(4, 5 * 60L, "5 minutes"),
+                Arguments.of(5, 10 * 60L, "10 minutes"),
+                Arguments.of(6, 40 * 60L, "40 minutes"),
+                Arguments.of(7, 24 * 60 * 60L, "24 hours"),
+                Arguments.of(8, 24 * 60 * 60L, "24 hours")
         );
     }
 

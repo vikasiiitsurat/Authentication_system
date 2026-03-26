@@ -3,6 +3,7 @@ package com.vikas.authsystem.config;
 import com.vikas.authsystem.security.JwtAuthenticationFilter;
 import com.vikas.authsystem.security.RestAccessDeniedHandler;
 import com.vikas.authsystem.security.RestAuthenticationEntryPoint;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -26,7 +27,8 @@ public class SecurityConfig {
             HttpSecurity http,
             JwtAuthenticationFilter jwtAuthenticationFilter,
             RestAuthenticationEntryPoint authenticationEntryPoint,
-            RestAccessDeniedHandler accessDeniedHandler
+            RestAccessDeniedHandler accessDeniedHandler,
+            @Value("${app.monitoring.permit-prometheus-scrape:false}") boolean permitPrometheusScrape
     )
             throws Exception {
         return http
@@ -43,10 +45,25 @@ public class SecurityConfig {
                                 "/actuator/health/**"
                         ).permitAll()
                         .requestMatchers(
+                                "/v3/api-docs/**",
+                                "/swagger-ui.html",
+                                "/swagger-ui/**"
+                        ).permitAll()
+                        .requestMatchers("/actuator/prometheus")
+                        .access((authentication, context) -> {
+                            if (permitPrometheusScrape) {
+                                return new org.springframework.security.authorization.AuthorizationDecision(true);
+                            }
+                            var currentAuthentication = authentication.get();
+                            boolean isAdmin = currentAuthentication != null
+                                    && currentAuthentication.getAuthorities().stream()
+                                    .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
+                            return new org.springframework.security.authorization.AuthorizationDecision(isAdmin);
+                        })
+                        .requestMatchers(
                                 "/actuator/info",
                                 "/actuator/metrics",
-                                "/actuator/metrics/**",
-                                "/actuator/prometheus"
+                                "/actuator/metrics/**"
                         ).hasRole("ADMIN")
                         .requestMatchers(
                                 HttpMethod.POST,
@@ -54,7 +71,9 @@ public class SecurityConfig {
                                 "/api/auth/login",
                                 "/api/auth/refresh",
                                 "/api/auth/verify-email",
-                                "/api/auth/resend-verification-otp"
+                                "/api/auth/resend-verification-otp",
+                                "/api/auth/forgot-password",
+                                "/api/auth/reset-password"
                         ).permitAll()
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated()

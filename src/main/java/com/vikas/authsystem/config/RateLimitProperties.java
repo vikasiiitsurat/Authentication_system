@@ -8,6 +8,8 @@ public class RateLimitProperties {
     private final Limit login = new Limit();
     private final Limit otpGeneration = new Limit();
     private final Limit otpVerification = new Limit();
+    private final Limit passwordResetRequest = new Limit();
+    private final Limit passwordResetConfirmation = new Limit();
 
     public Limit getLogin() {
         return login;
@@ -19,6 +21,14 @@ public class RateLimitProperties {
 
     public Limit getOtpVerification() {
         return otpVerification;
+    }
+
+    public Limit getPasswordResetRequest() {
+        return passwordResetRequest;
+    }
+
+    public Limit getPasswordResetConfirmation() {
+        return passwordResetConfirmation;
     }
 
     public static class Limit {

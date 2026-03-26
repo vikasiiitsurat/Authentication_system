@@ -3,11 +3,14 @@ package com.vikas.authsystem.service;
 import com.vikas.authsystem.dto.LoginRequest;
 import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.LogoutRequest;
+import com.vikas.authsystem.dto.ForgotPasswordRequest;
 import com.vikas.authsystem.dto.PasswordChangeRequest;
+import com.vikas.authsystem.dto.PasswordResetRequestResponse;
 import com.vikas.authsystem.dto.RefreshTokenRequest;
 import com.vikas.authsystem.dto.ResendVerificationOtpRequest;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
+import com.vikas.authsystem.dto.ResetPasswordRequest;
 import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
 import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
 import com.vikas.authsystem.entity.AuditAction;
@@ -53,6 +56,7 @@ public class AuthService {
     private final TokenBlacklistService tokenBlacklistService;
     private final SessionBlacklistService sessionBlacklistService;
     private final EmailVerificationOtpService emailVerificationOtpService;
+    private final PasswordResetOtpService passwordResetOtpService;
     private final OtpDeliveryService otpDeliveryService;
     private final AuditService auditService;
     private final AuthMetricsService authMetricsService;
@@ -67,6 +71,7 @@ public class AuthService {
             TokenBlacklistService tokenBlacklistService,
             SessionBlacklistService sessionBlacklistService,
             EmailVerificationOtpService emailVerificationOtpService,
+            PasswordResetOtpService passwordResetOtpService,
             OtpDeliveryService otpDeliveryService,
             AuditService auditService,
             AuthMetricsService authMetricsService,
@@ -80,6 +85,7 @@ public class AuthService {
         this.tokenBlacklistService = tokenBlacklistService;
         this.sessionBlacklistService = sessionBlacklistService;
         this.emailVerificationOtpService = emailVerificationOtpService;
+        this.passwordResetOtpService = passwordResetOtpService;
         this.otpDeliveryService = otpDeliveryService;
         this.auditService = auditService;
         this.authMetricsService = authMetricsService;
@@ -100,6 +106,7 @@ public class AuthService {
             }
             if (existingUser != null) {
                 existingUser.setPasswordHash(passwordEncoder.encode(request.password()));
+                existingUser.setPasswordChangedAt(Instant.now(clock));
                 clearFailedLoginState(existingUser);
                 userRepository.save(existingUser);
                 EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.reissueOtp(existingUser.getId());
@@ -109,7 +116,7 @@ public class AuthService {
                 return new RegisterResponse(
                         existingUser.getId(),
                         existingUser.getEmail(),
-                        "Registration is pending email verification. A fresh OTP has been sent.",
+                        "Registration is pending email verification. An OTP has been sent.",
                         existingUser.getCreatedAt(),
                         true,
                         otpIssueResult.expiresInSeconds(),
@@ -120,6 +127,7 @@ public class AuthService {
             User user = new User();
             user.setEmail(normalizedEmail);
             user.setPasswordHash(passwordEncoder.encode(request.password()));
+            user.setPasswordChangedAt(Instant.now(clock));
             user.setRole(UserRole.USER);
             user.setEmailVerified(false);
             user.setEmailVerifiedAt(null);
@@ -165,7 +173,10 @@ public class AuthService {
             if (isLockActive(user, now)) {
                 outcome = "account_locked";
                 auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
-                throw new AccountLockedException(buildLockMessage(user.getLockUntil()));
+                throw new AccountLockedException(
+                        buildLockMessage(user.getLockUntil(), now),
+                        secondsUntil(user.getLockUntil(), now)
+                );
             }
 
             if (hasExpiredLock(user, now)) {
@@ -178,6 +189,10 @@ public class AuthService {
                 auditService.recordEvent(AuditAction.LOGIN_FAILED, user.getId(), request.deviceId(), clientIp);
                 if (accountLocked) {
                     auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
+                    throw new AccountLockedException(
+                            buildLockMessage(user.getLockUntil(), now),
+                            secondsUntil(user.getLockUntil(), now)
+                    );
                 }
                 throw new UnauthorizedException("Invalid credentials");
             }
@@ -266,18 +281,11 @@ public class AuthService {
         Timer.Sample sample = authMetricsService.startTimer();
         String outcome = "error";
         try {
-            User user = userRepository.findByEmailForUpdate(normalizeEmail(request.email()))
-                    .orElseThrow(() -> new BadRequestException("Invalid resend request"));
-            if (user.isEmailVerified()) {
-                outcome = "already_verified";
-                return new EmailVerificationStatusResponse(
-                        user.getEmail(),
-                        "Email is already verified",
-                        true,
-                        user.getEmailVerifiedAt(),
-                        0,
-                        0
-                );
+            String normalizedEmail = normalizeEmail(request.email());
+            User user = userRepository.findByEmailForUpdate(normalizedEmail).orElse(null);
+            if (user == null || user.isEmailVerified()) {
+                outcome = "accepted";
+                return genericResendResponse(normalizedEmail);
             }
 
             EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.reissueOtp(user.getId());
@@ -286,7 +294,7 @@ public class AuthService {
             outcome = "success";
             return new EmailVerificationStatusResponse(
                     user.getEmail(),
-                    "A new OTP has been sent. It expires in 3 minutes.",
+                    "A verification OTP has been sent. It expires in " + formatRetryAfter(otpIssueResult.expiresInSeconds()) + ".",
                     false,
                     null,
                     otpIssueResult.expiresInSeconds(),
@@ -348,29 +356,84 @@ public class AuthService {
                 throw new BadRequestException("New password must be different from the current password");
             }
 
-            user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
-            resetFailedLoginState(user);
-            userRepository.save(user);
-            // Rotating the password invalidates every active refresh token for the user.
-            refreshTokenService.revokeAllTokensForUser(user.getId());
-            if (authenticatedUser.getTokenId() != null && authenticatedUser.getTokenExpiresAt() != null) {
-                long ttlSeconds = Math.max(
-                        0,
-                        authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond()
-                );
-                tokenBlacklistService.blacklist(authenticatedUser.getTokenId(), Duration.ofSeconds(ttlSeconds));
-            }
-            if (authenticatedUser.getSessionId() != null && authenticatedUser.getTokenExpiresAt() != null) {
-                long ttlSeconds = Math.max(
-                        0,
-                        authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond()
-                );
-                sessionBlacklistService.blacklist(authenticatedUser.getSessionId(), Duration.ofSeconds(ttlSeconds));
-            }
+            rotatePassword(user, request.newPassword());
+            revokeAuthenticatedAccess(authenticatedUser);
             auditService.recordEvent(AuditAction.PASSWORD_CHANGE, user.getId(), request.deviceId(), clientIp);
             outcome = "success";
         } finally {
             authMetricsService.recordOperation("change_password", outcome, sample);
+        }
+    }
+
+    @Transactional
+    public PasswordResetRequestResponse requestPasswordReset(ForgotPasswordRequest request, String clientIp) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "accepted";
+        String normalizedEmail = normalizeEmail(request.email());
+        try {
+            User user = userRepository.findByEmailForUpdate(normalizedEmail).orElse(null);
+            if (user == null || !user.isEmailVerified()) {
+                log.info(
+                        "password_reset_request_accepted_without_dispatch email={} reason={}",
+                        normalizedEmail,
+                        user == null ? "user_not_found" : "email_not_verified"
+                );
+                return genericPasswordResetResponse(normalizedEmail);
+            }
+
+            auditService.recordEvent(AuditAction.PASSWORD_RESET_REQUESTED, user.getId(), null, clientIp);
+            PasswordResetOtpService.OtpDispatchResult otpDispatchResult = passwordResetOtpService.requestOtp(user.getId());
+            if (otpDispatchResult.dispatched()) {
+                otpDeliveryService.sendPasswordResetOtp(user.getEmail(), otpDispatchResult.otp(), otpDispatchResult.expiresInSeconds());
+                auditService.recordEvent(AuditAction.PASSWORD_RESET_OTP_SENT, user.getId(), null, clientIp);
+                log.info("password_reset_otp_dispatch_succeeded userId={} email={}", user.getId(), user.getEmail());
+                outcome = "dispatched";
+            } else {
+                log.info(
+                        "password_reset_request_accepted_without_dispatch email={} reason=cooldown_or_budget_suppressed",
+                        normalizedEmail
+                );
+            }
+            return genericPasswordResetResponse(normalizedEmail);
+        } finally {
+            authMetricsService.recordOperation("request_password_reset", outcome, sample);
+        }
+    }
+
+    @Transactional
+    public void resetPassword(ResetPasswordRequest request, String clientIp) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            User user = userRepository.findByEmailForUpdate(normalizeEmail(request.email())).orElse(null);
+            if (user == null) {
+                outcome = "invalid_request";
+                throw new BadRequestException("Invalid password reset request");
+            }
+            if (!user.isEmailVerified()) {
+                outcome = "invalid_request";
+                throw new BadRequestException("Invalid password reset request");
+            }
+
+            try {
+                passwordResetOtpService.verifyOtp(user.getId(), request.otp());
+            } catch (BadRequestException ex) {
+                outcome = "invalid_otp";
+                auditService.recordEvent(AuditAction.PASSWORD_RESET_FAILED, user.getId(), request.deviceId(), clientIp);
+                throw ex;
+            }
+
+            if (passwordEncoder.matches(request.newPassword(), user.getPasswordHash())) {
+                outcome = "password_reuse";
+                auditService.recordEvent(AuditAction.PASSWORD_RESET_FAILED, user.getId(), request.deviceId(), clientIp);
+                throw new BadRequestException("New password must be different from the current password");
+            }
+
+            rotatePassword(user, request.newPassword());
+            auditService.recordEvent(AuditAction.PASSWORD_RESET_SUCCESS, user.getId(), request.deviceId(), clientIp);
+            outcome = "success";
+        } finally {
+            authMetricsService.recordOperation("reset_password", outcome, sample);
         }
     }
 
@@ -407,10 +470,54 @@ public class AuthService {
         return email.trim().toLowerCase();
     }
 
+    private EmailVerificationStatusResponse genericResendResponse(String email) {
+        return new EmailVerificationStatusResponse(
+                email,
+                "If the account exists and is pending verification, an OTP will be sent if resend rules allow it.",
+                false,
+                null,
+                0,
+                0
+        );
+    }
+
+    private PasswordResetRequestResponse genericPasswordResetResponse(String email) {
+        return new PasswordResetRequestResponse(
+                email,
+                "If the account exists and is eligible, a password reset code will be sent. The code expires in 10 minutes.",
+                passwordResetOtpService.expiresInSeconds(),
+                passwordResetOtpService.resendCooldownSeconds()
+        );
+    }
+
     private void clearFailedLoginState(User user) {
         user.setFailedAttempts(0);
         user.setLockUntil(null);
         user.setLastFailedAttempt(null);
+    }
+
+    private void rotatePassword(User user, String rawPassword) {
+        user.setPasswordHash(passwordEncoder.encode(rawPassword));
+        user.setPasswordChangedAt(Instant.now(clock));
+        resetFailedLoginState(user);
+        refreshTokenService.revokeAllTokensForUser(user.getId());
+    }
+
+    private void revokeAuthenticatedAccess(AuthenticatedUser authenticatedUser) {
+        if (authenticatedUser.getTokenId() != null && authenticatedUser.getTokenExpiresAt() != null) {
+            long ttlSeconds = Math.max(
+                    0,
+                    authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond()
+            );
+            tokenBlacklistService.blacklist(authenticatedUser.getTokenId(), Duration.ofSeconds(ttlSeconds));
+        }
+        if (authenticatedUser.getSessionId() != null && authenticatedUser.getTokenExpiresAt() != null) {
+            long ttlSeconds = Math.max(
+                    0,
+                    authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond()
+            );
+            sessionBlacklistService.blacklist(authenticatedUser.getSessionId(), Duration.ofSeconds(ttlSeconds));
+        }
     }
 
     private void clearExpiredLock(User user) {
@@ -438,7 +545,41 @@ public class AuthService {
         };
     }
 
-    private String buildLockMessage(Instant lockUntil) {
-        return "Account is locked until " + lockUntil;
+    private long secondsUntil(Instant lockUntil, Instant currentTime) {
+        if (lockUntil == null) {
+            return 0;
+        }
+        return Math.max(0, Duration.between(currentTime, lockUntil).getSeconds());
+    }
+
+    private String buildLockMessage(Instant lockUntil, Instant currentTime) {
+        long remainingSeconds = secondsUntil(lockUntil, currentTime);
+        return "Account is locked. Try again in " + formatRetryAfter(remainingSeconds) + ".";
+    }
+
+    private String formatRetryAfter(long remainingSeconds) {
+        if (remainingSeconds <= 0) {
+            return "a few seconds";
+        }
+
+        long hours = remainingSeconds / 3600;
+        long minutes = (remainingSeconds % 3600) / 60;
+        long seconds = remainingSeconds % 60;
+
+        if (hours > 0) {
+            return minutes > 0
+                    ? hours + " hour" + pluralize(hours) + " and " + minutes + " minute" + pluralize(minutes)
+                    : hours + " hour" + pluralize(hours);
+        }
+        if (minutes > 0) {
+            return seconds > 0
+                    ? minutes + " minute" + pluralize(minutes) + " and " + seconds + " second" + pluralize(seconds)
+                    : minutes + " minute" + pluralize(minutes);
+        }
+        return seconds + " second" + pluralize(seconds);
+    }
+
+    private String pluralize(long value) {
+        return value == 1 ? "" : "s";
     }
 }

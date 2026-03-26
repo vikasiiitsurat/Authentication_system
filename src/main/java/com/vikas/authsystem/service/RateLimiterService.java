@@ -14,6 +14,8 @@ public class RateLimiterService {
     private static final String LOGIN_KEY_PREFIX = "auth:rl:login:";
     private static final String OTP_GENERATION_KEY_PREFIX = "auth:rl:otp-generation:";
     private static final String OTP_VERIFICATION_KEY_PREFIX = "auth:rl:otp-verification:";
+    private static final String PASSWORD_RESET_REQUEST_KEY_PREFIX = "auth:rl:password-reset-request:";
+    private static final String PASSWORD_RESET_CONFIRMATION_KEY_PREFIX = "auth:rl:password-reset-confirmation:";
     private static final DefaultRedisScript<Long> INCREMENT_WITH_TTL_SCRIPT = new DefaultRedisScript<>(
             """
             local current = redis.call('INCR', KEYS[1])
@@ -69,6 +71,26 @@ public class RateLimiterService {
         );
     }
 
+    public void validatePasswordResetRequestRateLimit(String email, String ipAddress) {
+        String key = PASSWORD_RESET_REQUEST_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
+        validateLimit(
+                key,
+                "password_reset_request",
+                rateLimitProperties.getPasswordResetRequest(),
+                "Too many password reset requests. Please try again later."
+        );
+    }
+
+    public void validatePasswordResetConfirmationRateLimit(String email, String ipAddress) {
+        String key = PASSWORD_RESET_CONFIRMATION_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
+        validateLimit(
+                key,
+                "password_reset_confirmation",
+                rateLimitProperties.getPasswordResetConfirmation(),
+                "Too many password reset attempts. Please request a new code or try again later."
+        );
+    }
+
     private void validateLimit(String key, String limiter, RateLimitProperties.Limit limit, String errorMessage) {
         Long currentCount;
         try {
@@ -89,9 +111,14 @@ public class RateLimiterService {
 
         if (currentCount > limit.getMaxAttempts()) {
             authMetricsService.recordRateLimitDecision(limiter, "rejected");
-            throw new TooManyRequestsException(errorMessage);
+            throw new TooManyRequestsException(errorMessage, retryAfterSeconds(key));
         }
         authMetricsService.recordRateLimitDecision(limiter, "allowed");
+    }
+
+    private long retryAfterSeconds(String key) {
+        Long ttl = redisTemplate.getExpire(key);
+        return ttl == null || ttl < 0 ? 0 : ttl;
     }
 
     private String normalize(String value) {

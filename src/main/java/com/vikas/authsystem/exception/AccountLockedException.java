@@ -1,7 +1,14 @@
 package com.vikas.authsystem.exception;
 
 public class AccountLockedException extends ApiException {
-    public AccountLockedException(String message) {
+    private final long retryAfterSeconds;
+
+    public AccountLockedException(String message, long retryAfterSeconds) {
         super(message);
+        this.retryAfterSeconds = retryAfterSeconds;
+    }
+
+    public long getRetryAfterSeconds() {
+        return retryAfterSeconds;
     }
 }

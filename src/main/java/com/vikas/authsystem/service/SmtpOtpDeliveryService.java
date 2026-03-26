@@ -43,6 +43,23 @@ public class SmtpOtpDeliveryService implements OtpDeliveryService {
         }
     }
 
+    @Override
+    public void sendPasswordResetOtp(String email, String otp, long expiresInSeconds) {
+        try {
+            MimeMessage mimeMessage = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, false, "UTF-8");
+            helper.setFrom(requiredFromAddress());
+            helper.setTo(email);
+            helper.setSubject(mailProperties.getPasswordResetSubject());
+            helper.setText(buildPasswordResetBody(otp, expiresInSeconds), false);
+            mailSender.send(mimeMessage);
+            log.info("password_reset_otp_email_sent email={} expiresInSeconds={}", maskEmail(email), expiresInSeconds);
+        } catch (MessagingException | MailException ex) {
+            log.error("password_reset_otp_email_failed email={} error={}", maskEmail(email), ex.getMessage());
+            throw new ServiceUnavailableException("OTP delivery is temporarily unavailable. Please try again.");
+        }
+    }
+
     private String requiredFromAddress() {
         if (mailProperties.getFrom() == null || mailProperties.getFrom().isBlank()) {
             throw new IllegalStateException("app.mail.from must be configured when SMTP delivery is enabled");
@@ -60,6 +77,22 @@ public class SmtpOtpDeliveryService implements OtpDeliveryService {
                 %s
 
                 This code expires in %d minute(s). If you did not create this account, you can ignore this message.
+
+                Thanks,
+                AuthSystem Security
+                """.formatted(otp, expiresInMinutes);
+    }
+
+    private String buildPasswordResetBody(String otp, long expiresInSeconds) {
+        long expiresInMinutes = Math.max(1, Math.round(expiresInSeconds / 60.0));
+        return """
+                Hello,
+
+                Use the following one-time password to reset your account password:
+
+                %s
+
+                This code expires in %d minute(s). If you did not request a password reset, ignore this email and review your account security.
 
                 Thanks,
                 AuthSystem Security

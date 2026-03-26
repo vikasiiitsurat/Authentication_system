@@ -1,6 +1,7 @@
 package com.vikas.authsystem.security;
 
 import com.vikas.authsystem.entity.UserRole;
+import com.vikas.authsystem.repository.UserRepository;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.JwtException;
@@ -30,15 +31,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtUtil jwtUtil;
     private final TokenBlacklistService tokenBlacklistService;
     private final SessionBlacklistService sessionBlacklistService;
+    private final UserRepository userRepository;
 
     public JwtAuthenticationFilter(
             JwtUtil jwtUtil,
             TokenBlacklistService tokenBlacklistService,
-            SessionBlacklistService sessionBlacklistService
+            SessionBlacklistService sessionBlacklistService,
+            UserRepository userRepository
     ) {
         this.jwtUtil = jwtUtil;
         this.tokenBlacklistService = tokenBlacklistService;
         this.sessionBlacklistService = sessionBlacklistService;
+        this.userRepository = userRepository;
     }
 
     @Override
@@ -68,6 +72,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 return;
             }
             Instant tokenExpiresAt = claims.getExpiration() == null ? null : claims.getExpiration().toInstant();
+            Instant tokenIssuedAt = claims.getIssuedAt() == null ? null : claims.getIssuedAt().toInstant();
+            if (isPasswordChangeNewerThanToken(userId, tokenIssuedAt)) {
+                filterChain.doFilter(request, response);
+                return;
+            }
             AuthenticatedUser authenticatedUser = new AuthenticatedUser(userId, role, sessionId, jti, tokenExpiresAt);
             UsernamePasswordAuthenticationToken authentication =
                     new UsernamePasswordAuthenticationToken(
@@ -83,6 +92,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    private boolean isPasswordChangeNewerThanToken(UUID userId, Instant tokenIssuedAt) {
+        return userRepository.findById(userId)
+                .map(user -> {
+                    Instant passwordChangedAt = user.getPasswordChangedAt();
+                    return passwordChangedAt != null && (tokenIssuedAt == null || tokenIssuedAt.isBefore(passwordChangedAt));
+                })
+                .orElse(true);
     }
 
     private UUID extractUserId(Claims claims) {

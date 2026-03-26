@@ -28,6 +28,17 @@ public class LoggingOtpDeliveryService implements OtpDeliveryService {
         );
     }
 
+    @Override
+    public void sendPasswordResetOtp(String email, String otp, long expiresInSeconds) {
+        String otpToken = mailProperties.isLogOtp() ? otp : "<redacted>";
+        log.info(
+                "password_reset_otp_dispatched email={} otp={} expiresInSeconds={}",
+                maskEmail(email),
+                otpToken,
+                expiresInSeconds
+        );
+    }
+
     private String maskEmail(String email) {
         int separatorIndex = email.indexOf('@');
         if (separatorIndex <= 1) {

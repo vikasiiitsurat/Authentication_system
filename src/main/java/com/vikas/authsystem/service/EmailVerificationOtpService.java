@@ -1,19 +1,25 @@
 package com.vikas.authsystem.service;
 
+import com.vikas.authsystem.config.OtpProperties;
 import com.vikas.authsystem.exception.BadRequestException;
+import com.vikas.authsystem.exception.TooManyRequestsException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 @Service
 public class EmailVerificationOtpService {
@@ -28,6 +34,7 @@ public class EmailVerificationOtpService {
     private static final String KEY_PREFIX = "auth:email-verification:";
     private static final String GENERATION_COUNTER_KEY_PREFIX = "auth:email-verification:generation-count:";
     private static final String RESEND_COUNTER_KEY_PREFIX = "auth:email-verification:resend-count:";
+    private static final String OTP_VERSION = "2";
     private static final DefaultRedisScript<Long> INCREMENT_WITH_TTL_SCRIPT = new DefaultRedisScript<>(
             """
             local current = redis.call('INCR', KEYS[1])
@@ -40,20 +47,29 @@ public class EmailVerificationOtpService {
     );
 
     private final StringRedisTemplate redisTemplate;
-    private final SecureRandom secureRandom = new SecureRandom();
+    private final Clock clock;
+    private final SecretKeySpec otpSecretKey;
 
-    public EmailVerificationOtpService(StringRedisTemplate redisTemplate) {
+    @Autowired
+    public EmailVerificationOtpService(StringRedisTemplate redisTemplate, OtpProperties otpProperties) {
+        this(redisTemplate, otpProperties, Clock.systemUTC());
+    }
+
+    EmailVerificationOtpService(StringRedisTemplate redisTemplate, OtpProperties otpProperties, Clock clock) {
         this.redisTemplate = redisTemplate;
+        this.clock = clock;
+        this.otpSecretKey = buildOtpSecretKey(otpProperties);
     }
 
     public OtpIssueResult issueOtp(UUID userId) {
         enforceGenerationBudget(userId);
-        String otp = generateOtp();
-        Instant now = Instant.now();
+        Instant now = Instant.now(clock);
+        String otp = generateOtp(userId, now.getEpochSecond());
         String key = key(userId);
         HashOperations<String, Object, Object> hashOperations = redisTemplate.opsForHash();
         hashOperations.putAll(key, Map.of(
                 "otpHash", hashOtp(otp),
+                "otpVersion", OTP_VERSION,
                 "attemptCount", "0",
                 "createdAtEpochSecond", String.valueOf(now.getEpochSecond()),
                 "resendAvailableAtEpochSecond", String.valueOf(now.plus(RESEND_COOLDOWN).getEpochSecond())
@@ -68,13 +84,34 @@ public class EmailVerificationOtpService {
         if (values.isEmpty()) {
             return issueOtp(userId);
         }
-        OtpMetadata metadata = new OtpMetadata(parseLong(values.get("resendAvailableAtEpochSecond")));
-        long resendAvailableInSeconds = Math.max(0, metadata.resendAvailableAtEpochSecond() - Instant.now().getEpochSecond());
+        Instant now = Instant.now(clock);
+        OtpMetadata metadata = new OtpMetadata(
+                parseLong(values.get("createdAtEpochSecond")),
+                parseLong(values.get("resendAvailableAtEpochSecond")),
+                String.valueOf(values.getOrDefault("otpVersion", "1"))
+        );
+        long resendAvailableInSeconds = Math.max(0, metadata.resendAvailableAtEpochSecond() - now.getEpochSecond());
         if (resendAvailableInSeconds > 0) {
-            throw new BadRequestException("OTP can be resent in " + resendAvailableInSeconds + " seconds");
+            throw new TooManyRequestsException(
+                    "OTP can be resent in " + resendAvailableInSeconds + " seconds.",
+                    resendAvailableInSeconds
+            );
         }
         enforceResendBudget(userId);
-        return issueOtp(userId);
+        if (!OTP_VERSION.equals(metadata.otpVersion())) {
+            return issueOtp(userId);
+        }
+
+        redisTemplate.opsForHash().put(
+                key,
+                "resendAvailableAtEpochSecond",
+                String.valueOf(now.plus(RESEND_COOLDOWN).getEpochSecond())
+        );
+        return new OtpIssueResult(
+                generateOtp(userId, metadata.createdAtEpochSecond()),
+                remainingSeconds(key),
+                RESEND_COOLDOWN.toSeconds()
+        );
     }
 
     public OtpVerificationResult verifyOtp(UUID userId, String providedOtp) {
@@ -116,7 +153,11 @@ public class EmailVerificationOtpService {
         if (values.isEmpty()) {
             throw new BadRequestException("OTP has expired or is unavailable. Request a new OTP.");
         }
-        return new OtpMetadata(parseLong(values.get("resendAvailableAtEpochSecond")));
+        return new OtpMetadata(
+                parseLong(values.get("createdAtEpochSecond")),
+                parseLong(values.get("resendAvailableAtEpochSecond")),
+                String.valueOf(values.getOrDefault("otpVersion", "1"))
+        );
     }
 
     private long remainingSeconds(String key) {
@@ -129,16 +170,24 @@ public class EmailVerificationOtpService {
     }
 
     private void enforceGenerationBudget(UUID userId) {
-        long count = incrementCounter(generationCounterKey(userId), GENERATION_LIMIT_WINDOW);
+        String key = generationCounterKey(userId);
+        long count = incrementCounter(key, GENERATION_LIMIT_WINDOW);
         if (count > MAX_GENERATIONS_PER_WINDOW) {
-            throw new BadRequestException("OTP generation limit reached. Please try again later.");
+            throw new TooManyRequestsException(
+                    "OTP generation limit reached. Please try again later.",
+                    remainingSeconds(key)
+            );
         }
     }
 
     private void enforceResendBudget(UUID userId) {
-        long count = incrementCounter(resendCounterKey(userId), RESEND_LIMIT_WINDOW);
+        String key = resendCounterKey(userId);
+        long count = incrementCounter(key, RESEND_LIMIT_WINDOW);
         if (count > MAX_RESENDS_PER_WINDOW) {
-            throw new BadRequestException("Resend limit reached. Please wait before requesting another OTP.");
+            throw new TooManyRequestsException(
+                    "Resend limit reached. Please wait before requesting another OTP.",
+                    remainingSeconds(key)
+            );
         }
     }
 
@@ -162,8 +211,23 @@ public class EmailVerificationOtpService {
         return RESEND_COUNTER_KEY_PREFIX + userId;
     }
 
-    private String generateOtp() {
-        return String.format("%06d", secureRandom.nextInt(1_000_000));
+    private String generateOtp(UUID userId, long createdAtEpochSecond) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(otpSecretKey);
+            byte[] hash = mac.doFinal((userId + ":" + createdAtEpochSecond).getBytes(StandardCharsets.UTF_8));
+            int code = (ByteBuffer.wrap(hash, 0, Integer.BYTES).getInt() & Integer.MAX_VALUE) % 1_000_000;
+            return String.format("%06d", code);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to generate OTP", ex);
+        }
+    }
+
+    private SecretKeySpec buildOtpSecretKey(OtpProperties otpProperties) {
+        if (otpProperties == null || otpProperties.getSecret() == null || otpProperties.getSecret().isBlank()) {
+            throw new IllegalStateException("app.otp.secret must be configured");
+        }
+        return new SecretKeySpec(otpProperties.getSecret().trim().getBytes(StandardCharsets.UTF_8), "HmacSHA256");
     }
 
     private String hashOtp(String otp) {
@@ -192,7 +256,7 @@ public class EmailVerificationOtpService {
         return builder.toString();
     }
 
-    private record OtpMetadata(long resendAvailableAtEpochSecond) {
+    private record OtpMetadata(long createdAtEpochSecond, long resendAvailableAtEpochSecond, String otpVersion) {
     }
 
     public record OtpIssueResult(String otp, long expiresInSeconds, long resendAvailableInSeconds) {

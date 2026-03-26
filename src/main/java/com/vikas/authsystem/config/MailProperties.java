@@ -7,6 +7,7 @@ public class MailProperties {
 
     private String from;
     private String verificationSubject = "Verify your email address";
+    private String passwordResetSubject = "Reset your password";
     private String deliveryMode = "log";
     private boolean logOtp = true;
 
@@ -24,6 +25,14 @@ public class MailProperties {
 
     public void setVerificationSubject(String verificationSubject) {
         this.verificationSubject = verificationSubject;
+    }
+
+    public String getPasswordResetSubject() {
+        return passwordResetSubject;
+    }
+
+    public void setPasswordResetSubject(String passwordResetSubject) {
+        this.passwordResetSubject = passwordResetSubject;
     }
 
     public String getDeliveryMode() {
