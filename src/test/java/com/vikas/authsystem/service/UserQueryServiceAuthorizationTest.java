@@ -69,7 +69,7 @@ class UserQueryServiceAuthorizationTest {
     void userCanFetchOwnProfile() {
         User user = user(UUID.randomUUID(), UserRole.USER, "self@example.com");
         authenticate(user.getId(), UserRole.USER);
-        when(userRepository.findById(user.getId())).thenReturn(Optional.of(user));
+        when(userRepository.findActiveById(user.getId())).thenReturn(Optional.of(user));
 
         UserProfileResponse response = userQueryService.getUserProfile(user.getId());
 
@@ -93,7 +93,7 @@ class UserQueryServiceAuthorizationTest {
         UUID targetUserId = UUID.randomUUID();
         User user = user(targetUserId, UserRole.USER, "target@example.com");
         authenticate(UUID.randomUUID(), UserRole.ADMIN);
-        when(userRepository.findById(targetUserId)).thenReturn(Optional.of(user));
+        when(userRepository.findActiveById(targetUserId)).thenReturn(Optional.of(user));
 
         UserProfileResponse response = userQueryService.getUserProfile(targetUserId);
 
@@ -105,7 +105,7 @@ class UserQueryServiceAuthorizationTest {
         User first = user(UUID.randomUUID(), UserRole.USER, "first@example.com");
         User second = user(UUID.randomUUID(), UserRole.ADMIN, "second@example.com");
         authenticate(UUID.randomUUID(), UserRole.ADMIN);
-        when(userRepository.findAll()).thenReturn(List.of(first, second));
+        when(userRepository.findAllByDeletedAtIsNull()).thenReturn(List.of(first, second));
 
         List<UserProfileResponse> response = userQueryService.listUsers();
 
@@ -118,7 +118,7 @@ class UserQueryServiceAuthorizationTest {
 
         assertThrows(AccessDeniedException.class, () -> userQueryService.listUsers());
 
-        verify(userRepository, never()).findAll();
+        verify(userRepository, never()).findAllByDeletedAtIsNull();
     }
 
     private void authenticate(UUID userId, UserRole role) {

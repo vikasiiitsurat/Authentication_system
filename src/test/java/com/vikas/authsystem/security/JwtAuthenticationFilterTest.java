@@ -83,6 +83,52 @@ class JwtAuthenticationFilterTest {
         assertNotNull(SecurityContextHolder.getContext().getAuthentication());
     }
 
+    @Test
+    void rejectsAccessTokenIssuedAtOrBeforeGlobalLogout() throws Exception {
+        JwtAuthenticationFilter filter = new JwtAuthenticationFilter(jwtUtil(), tokenBlacklistService, sessionBlacklistService, userRepository);
+        UUID userId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        Instant issuedAt = Instant.parse("2026-03-26T10:15:30Z");
+        User user = new User();
+        user.setId(userId);
+        user.setRole(UserRole.USER);
+        user.setSessionInvalidatedAt(issuedAt);
+        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(sessionBlacklistService.isBlacklisted(sessionId)).thenReturn(false);
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        HttpServletResponse response = mock(HttpServletResponse.class);
+        FilterChain filterChain = mock(FilterChain.class);
+        when(request.getHeader(HttpHeaders.AUTHORIZATION)).thenReturn("Bearer " + token(userId, sessionId, issuedAt));
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+    }
+
+    @Test
+    void rejectsAccessTokenForSoftDeletedAccount() throws Exception {
+        JwtAuthenticationFilter filter = new JwtAuthenticationFilter(jwtUtil(), tokenBlacklistService, sessionBlacklistService, userRepository);
+        UUID userId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        Instant issuedAt = Instant.parse("2026-03-26T10:15:30Z");
+        User user = new User();
+        user.setId(userId);
+        user.setRole(UserRole.USER);
+        user.setDeletedAt(issuedAt.plusSeconds(30));
+        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(sessionBlacklistService.isBlacklisted(sessionId)).thenReturn(false);
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        HttpServletResponse response = mock(HttpServletResponse.class);
+        FilterChain filterChain = mock(FilterChain.class);
+        when(request.getHeader(HttpHeaders.AUTHORIZATION)).thenReturn("Bearer " + token(userId, sessionId, issuedAt));
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+    }
+
     private JwtUtil jwtUtil() {
         JwtProperties jwtProperties = new JwtProperties();
         jwtProperties.setIssuer("test-issuer");

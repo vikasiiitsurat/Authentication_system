@@ -8,6 +8,7 @@ public class MailProperties {
     private String from;
     private String verificationSubject = "Verify your email address";
     private String passwordResetSubject = "Reset your password";
+    private String accountUnlockSubject = "Unlock your account";
     private String deliveryMode = "log";
     private boolean logOtp = true;
 
@@ -33,6 +34,14 @@ public class MailProperties {
 
     public void setPasswordResetSubject(String passwordResetSubject) {
         this.passwordResetSubject = passwordResetSubject;
+    }
+
+    public String getAccountUnlockSubject() {
+        return accountUnlockSubject;
+    }
+
+    public void setAccountUnlockSubject(String accountUnlockSubject) {
+        this.accountUnlockSubject = accountUnlockSubject;
     }
 
     public String getDeliveryMode() {

@@ -2,8 +2,8 @@ package com.vikas.authsystem.service;
 
 import com.vikas.authsystem.dto.LoginRequest;
 import com.vikas.authsystem.dto.LoginResponse;
-import com.vikas.authsystem.dto.LogoutRequest;
 import com.vikas.authsystem.dto.ForgotPasswordRequest;
+import com.vikas.authsystem.dto.GlobalLogoutResponse;
 import com.vikas.authsystem.dto.PasswordChangeRequest;
 import com.vikas.authsystem.dto.PasswordResetRequestResponse;
 import com.vikas.authsystem.dto.RefreshTokenRequest;
@@ -13,14 +13,16 @@ import com.vikas.authsystem.dto.RegisterResponse;
 import com.vikas.authsystem.dto.ResetPasswordRequest;
 import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
 import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
+import com.vikas.authsystem.dto.AccountUnlockRequest;
+import com.vikas.authsystem.dto.AccountUnlockRequestResponse;
 import com.vikas.authsystem.entity.AuditAction;
 import com.vikas.authsystem.entity.RefreshToken;
 import com.vikas.authsystem.entity.User;
 import com.vikas.authsystem.entity.UserRole;
-import com.vikas.authsystem.exception.AccountLockedException;
+import com.vikas.authsystem.dto.VerifyAccountUnlockRequest;
 import com.vikas.authsystem.exception.BadRequestException;
-import com.vikas.authsystem.exception.ForbiddenException;
 import com.vikas.authsystem.exception.ResourceConflictException;
+import com.vikas.authsystem.exception.TooManyRequestsException;
 import com.vikas.authsystem.exception.UnauthorizedException;
 import com.vikas.authsystem.repository.UserRepository;
 import com.vikas.authsystem.security.AuthenticatedUser;
@@ -42,36 +44,37 @@ import java.time.Instant;
 public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
-    private static final int MAX_FAILED_ATTEMPTS = 5;
-    private static final Duration INITIAL_LOCK_DURATION = Duration.ofMinutes(5);
-    private static final Duration SECOND_LOCK_DURATION = Duration.ofMinutes(10);
-    private static final Duration THIRD_LOCK_DURATION = Duration.ofMinutes(40);
-    private static final Duration MAX_LOCK_DURATION = Duration.ofHours(24);
+    private static final String GENERIC_LOGIN_FAILURE_MESSAGE = "Invalid email or password";
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
+    private final LoginProtectionService loginProtectionService;
     private final RefreshTokenService refreshTokenService;
     private final TemporaryCacheService temporaryCacheService;
     private final TokenBlacklistService tokenBlacklistService;
     private final SessionBlacklistService sessionBlacklistService;
     private final EmailVerificationOtpService emailVerificationOtpService;
     private final PasswordResetOtpService passwordResetOtpService;
+    private final AccountUnlockOtpService accountUnlockOtpService;
     private final OtpDeliveryService otpDeliveryService;
     private final AuditService auditService;
     private final AuthMetricsService authMetricsService;
     private final Clock clock;
+    private final String dummyPasswordHash;
 
     public AuthService(
             UserRepository userRepository,
             PasswordEncoder passwordEncoder,
             JwtUtil jwtUtil,
+            LoginProtectionService loginProtectionService,
             RefreshTokenService refreshTokenService,
             TemporaryCacheService temporaryCacheService,
             TokenBlacklistService tokenBlacklistService,
             SessionBlacklistService sessionBlacklistService,
             EmailVerificationOtpService emailVerificationOtpService,
             PasswordResetOtpService passwordResetOtpService,
+            AccountUnlockOtpService accountUnlockOtpService,
             OtpDeliveryService otpDeliveryService,
             AuditService auditService,
             AuthMetricsService authMetricsService,
@@ -80,16 +83,19 @@ public class AuthService {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtUtil = jwtUtil;
+        this.loginProtectionService = loginProtectionService;
         this.refreshTokenService = refreshTokenService;
         this.temporaryCacheService = temporaryCacheService;
         this.tokenBlacklistService = tokenBlacklistService;
         this.sessionBlacklistService = sessionBlacklistService;
         this.emailVerificationOtpService = emailVerificationOtpService;
         this.passwordResetOtpService = passwordResetOtpService;
+        this.accountUnlockOtpService = accountUnlockOtpService;
         this.otpDeliveryService = otpDeliveryService;
         this.auditService = auditService;
         this.authMetricsService = authMetricsService;
         this.clock = clock;
+        this.dummyPasswordHash = passwordEncoder.encode("auth-system-dummy-password");
     }
 
     @Transactional
@@ -160,50 +166,55 @@ public class AuthService {
         String outcome = "error";
         try {
             String normalizedEmail = normalizeEmail(request.email());
-            User user = userRepository.findByEmailForUpdate(normalizedEmail)
-                    .orElse(null);
-
-            if (user == null) {
-                outcome = "invalid_credentials";
-                auditService.recordEvent(AuditAction.LOGIN_FAILED, null, request.deviceId(), clientIp);
-                throw new UnauthorizedException("Invalid credentials");
-            }
-
-            Instant now = Instant.now(clock);
-            if (isLockActive(user, now)) {
-                outcome = "account_locked";
-                auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
-                throw new AccountLockedException(
-                        buildLockMessage(user.getLockUntil(), now),
-                        secondsUntil(user.getLockUntil(), now)
+            LoginProtectionService.PreAuthenticationDecision preAuthenticationDecision =
+                    loginProtectionService.evaluateAttempt(normalizedEmail, clientIp);
+            if (preAuthenticationDecision.throttled()) {
+                outcome = "rate_limited_" + preAuthenticationDecision.reason();
+                authMetricsService.recordLoginAttempt("rate_limited");
+                auditService.recordEvent(resolveThrottleAuditAction(preAuthenticationDecision.reason()), null, request.deviceId(), clientIp);
+                consumePasswordWorkFactor(request.password());
+                throw new TooManyRequestsException(
+                        "Too many login attempts. Please try again later.",
+                        preAuthenticationDecision.retryAfterSeconds()
                 );
             }
 
-            if (hasExpiredLock(user, now)) {
-                clearExpiredLock(user);
-            }
-
-            if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
-                boolean accountLocked = handleFailedLogin(user, now);
-                outcome = accountLocked ? "account_locked" : "invalid_credentials";
-                auditService.recordEvent(AuditAction.LOGIN_FAILED, user.getId(), request.deviceId(), clientIp);
-                if (accountLocked) {
-                    auditService.recordEvent(AuditAction.ACCOUNT_LOCKED, user.getId(), request.deviceId(), clientIp);
-                    throw new AccountLockedException(
-                            buildLockMessage(user.getLockUntil(), now),
-                            secondsUntil(user.getLockUntil(), now)
+            User user = userRepository.findByEmail(normalizedEmail).orElse(null);
+            String passwordHashToCheck = user == null ? dummyPasswordHash : user.getPasswordHash();
+            boolean passwordMatches = passwordEncoder.matches(request.password(), passwordHashToCheck);
+            if (user == null || !passwordMatches) {
+                LoginProtectionService.FailureDecision failureDecision =
+                        loginProtectionService.recordFailedAttempt(normalizedEmail, clientIp);
+                outcome = failureDecision.suspiciousIpThrottled() ? "suspicious_ip" : "invalid_credentials";
+                authMetricsService.recordLoginAttempt("failure");
+                authMetricsService.recordLoginFailure(failureDecision.suspiciousIpThrottled() ? "suspicious_ip" : "invalid_credentials");
+                auditService.recordEvent(AuditAction.LOGIN_FAILED, user == null ? null : user.getId(), request.deviceId(), clientIp);
+                if (failureDecision.accountProtectionActivated()) {
+                    auditService.recordEvent(AuditAction.LOGIN_ACCOUNT_PROTECTION_ACTIVATED, user == null ? null : user.getId(), request.deviceId(), clientIp);
+                }
+                if (failureDecision.accountIpThrottled()) {
+                    auditService.recordEvent(AuditAction.LOGIN_ACCOUNT_IP_THROTTLED, user == null ? null : user.getId(), request.deviceId(), clientIp);
+                    throw new TooManyRequestsException(
+                            "Too many login attempts. Please try again later.",
+                            failureDecision.retryAfterSeconds()
                     );
                 }
-                throw new UnauthorizedException("Invalid credentials");
+                if (failureDecision.suspiciousIpThrottled()) {
+                    auditService.recordEvent(AuditAction.LOGIN_SUSPICIOUS_IP_BLOCKED, user == null ? null : user.getId(), request.deviceId(), clientIp);
+                    throw new TooManyRequestsException("Too many login attempts. Please try again later.", failureDecision.retryAfterSeconds());
+                }
+                throw new UnauthorizedException(GENERIC_LOGIN_FAILURE_MESSAGE);
             }
 
             if (!user.isEmailVerified()) {
-                outcome = "email_verification_required";
+                outcome = "login_denied";
+                authMetricsService.recordLoginAttempt("failure");
+                authMetricsService.recordLoginFailure("email_verification_required");
                 auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_REQUIRED, user.getId(), request.deviceId(), clientIp);
-                throw new ForbiddenException("Email verification is required before logging in");
+                throw new UnauthorizedException(GENERIC_LOGIN_FAILURE_MESSAGE);
             }
 
-            resetFailedLoginState(user);
+            loginProtectionService.clearSuccess(normalizedEmail, clientIp);
             // Access tokens stay stateless while refresh-token lifecycle is delegated to RefreshTokenService.
             String refreshToken = refreshTokenService.generateRawRefreshToken();
             RefreshTokenService.StoredSession storedSession = refreshTokenService.storeRefreshToken(
@@ -219,6 +230,7 @@ public class AuthService {
 
             log.info("User login succeeded for userId={} from ip={}", user.getId(), clientIp);
             outcome = "success";
+            authMetricsService.recordLoginAttempt("success");
             return new LoginResponse(accessToken, refreshToken, "Bearer", jwtUtil.accessTokenTtlSeconds());
         } finally {
             authMetricsService.recordOperation("login", outcome, sample);
@@ -306,33 +318,67 @@ public class AuthService {
     }
 
     @Transactional
-    public void logout(LogoutRequest request, AuthenticatedUser authenticatedUser, String clientIp) {
+    public void logout(AuthenticatedUser authenticatedUser, String clientIp) {
         Timer.Sample sample = authMetricsService.startTimer();
         String outcome = "error";
         try {
-            java.util.UUID authenticatedUserId = authenticatedUser == null ? null : authenticatedUser.getUserId();
-            if (authenticatedUser != null && authenticatedUser.getTokenId() != null && authenticatedUser.getTokenExpiresAt() != null) {
-                // The access token is blacklisted independently from refresh-token revocation to cover both token types.
-                long ttlSeconds = Math.max(0, authenticatedUser.getTokenExpiresAt().getEpochSecond() - Instant.now(clock).getEpochSecond());
-                tokenBlacklistService.blacklist(authenticatedUser.getTokenId(), java.time.Duration.ofSeconds(ttlSeconds));
+            if (authenticatedUser == null) {
+                outcome = "unauthorized";
+                auditService.recordEvent(AuditAction.LOGOUT_FAILED, null, null, clientIp);
+                throw new UnauthorizedException("Authentication is required");
             }
-            RefreshToken refreshToken;
-            try {
-                refreshToken = refreshTokenService.revokeRefreshToken(request.refreshToken(), authenticatedUserId);
-            } catch (UnauthorizedException ex) {
-                outcome = "invalid_refresh_token";
-                auditService.recordEvent(AuditAction.LOGOUT_FAILED, authenticatedUserId, null, clientIp);
-                throw ex;
-            }
+            // Logout is session-centric: the access token identifies the session to revoke, making the endpoint
+            // idempotent and eliminating dependency on a potentially stale client-held refresh token.
+            RefreshTokenService.SessionRevocationResult revocationResult = refreshTokenService.revokeSessionIfPresent(
+                    authenticatedUser.getUserId(),
+                    authenticatedUser.getSessionId()
+            );
+            revokeAuthenticatedAccess(authenticatedUser);
             auditService.recordEvent(
                     AuditAction.LOGOUT,
-                    refreshToken.getUser().getId(),
-                    refreshToken.getDeviceId(),
+                    authenticatedUser.getUserId(),
+                    revocationResult.deviceId(),
                     clientIp
             );
             outcome = "success";
         } finally {
             authMetricsService.recordOperation("logout", outcome, sample);
+        }
+    }
+
+    @Transactional
+    public GlobalLogoutResponse logoutAll(AuthenticatedUser authenticatedUser, String clientIp) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            if (authenticatedUser == null) {
+                throw new UnauthorizedException("Authentication is required");
+            }
+            User user = userRepository.findByIdForUpdate(authenticatedUser.getUserId())
+                    .orElseThrow(() -> new UnauthorizedException("Authenticated user not found"));
+            Instant now = Instant.now(clock);
+            user.setSessionInvalidatedAt(now);
+            userRepository.save(user);
+            int revokedSessions = refreshTokenService.revokeAllTokensForUser(user.getId());
+            revokeAuthenticatedAccess(authenticatedUser);
+            auditService.recordEvent(AuditAction.GLOBAL_LOGOUT, user.getId(), null, clientIp);
+            outcome = "success";
+            return new GlobalLogoutResponse(
+                    "All active sessions were revoked",
+                    revokedSessions,
+                    now
+            );
+        } catch (UnauthorizedException ex) {
+            outcome = "unauthorized";
+            auditService.recordEvent(
+                    AuditAction.GLOBAL_LOGOUT_FAILED,
+                    authenticatedUser == null ? null : authenticatedUser.getUserId(),
+                    null,
+                    clientIp
+            );
+            throw ex;
+        } finally {
+            authMetricsService.recordOperation("logout_all", outcome, sample);
         }
     }
 
@@ -437,28 +483,81 @@ public class AuthService {
         }
     }
 
-    private boolean handleFailedLogin(User user, Instant currentTime) {
-        int updatedAttempts = user.getFailedAttempts() + 1;
-        user.setFailedAttempts(updatedAttempts);
-        user.setLastFailedAttempt(currentTime);
+    @Transactional
+    public AccountUnlockRequestResponse requestAccountUnlock(AccountUnlockRequest request, String clientIp) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "accepted";
+        String normalizedEmail = normalizeEmail(request.email());
+        try {
+            User user = userRepository.findByEmail(normalizedEmail).orElse(null);
+            if (user == null || !user.isEmailVerified()) {
+                log.info(
+                        "account_unlock_request_accepted_without_dispatch email={} reason={}",
+                        normalizedEmail,
+                        user == null ? "user_not_found" : "email_not_verified"
+                );
+                return genericAccountUnlockResponse(normalizedEmail);
+            }
 
-        if (updatedAttempts < MAX_FAILED_ATTEMPTS) {
-            log.warn("Failed login attempt {} for userId={}", updatedAttempts, user.getId());
-            userRepository.save(user);
-            return false;
+            if (!loginProtectionService.isRecoveryEligible(normalizedEmail, clientIp)) {
+                log.info(
+                        "account_unlock_request_accepted_without_dispatch email={} reason=no_active_account_recovery_state",
+                        normalizedEmail
+                );
+                return genericAccountUnlockResponse(normalizedEmail);
+            }
+
+            auditService.recordEvent(AuditAction.ACCOUNT_UNLOCK_REQUESTED, user.getId(), null, clientIp);
+            AccountUnlockOtpService.OtpDispatchResult otpDispatchResult = accountUnlockOtpService.requestOtp(
+                    user.getId(),
+                    loginProtectionService.hashIpAddress(clientIp)
+            );
+            if (otpDispatchResult.dispatched()) {
+                otpDeliveryService.sendAccountUnlockOtp(user.getEmail(), otpDispatchResult.otp(), otpDispatchResult.expiresInSeconds());
+                auditService.recordEvent(AuditAction.ACCOUNT_UNLOCK_OTP_SENT, user.getId(), null, clientIp);
+                log.info("account_unlock_otp_dispatch_succeeded userId={} email={}", user.getId(), user.getEmail());
+                outcome = "dispatched";
+            } else {
+                log.info(
+                        "account_unlock_request_accepted_without_dispatch email={} reason=cooldown_or_budget_suppressed",
+                        normalizedEmail
+                );
+            }
+            return genericAccountUnlockResponse(normalizedEmail);
+        } finally {
+            authMetricsService.recordOperation("request_account_unlock", outcome, sample);
         }
+    }
 
-        Duration lockDuration = calculateLockDuration(updatedAttempts);
-        Instant lockUntil = currentTime.plus(lockDuration);
-        user.setLockUntil(lockUntil);
-        userRepository.save(user);
-        log.warn(
-                "User account locked after {} failed attempts for userId={} until={}",
-                updatedAttempts,
-                user.getId(),
-                lockUntil
-        );
-        return true;
+    @Transactional
+    public void unlockAccount(VerifyAccountUnlockRequest request, String clientIp) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            User user = userRepository.findByEmail(normalizeEmail(request.email())).orElse(null);
+            if (user == null || !user.isEmailVerified()) {
+                outcome = "invalid_request";
+                throw new BadRequestException("Invalid account unlock request");
+            }
+
+            AccountUnlockOtpService.OtpVerificationResult verificationResult;
+            try {
+                verificationResult = accountUnlockOtpService.verifyOtp(user.getId(), request.otp());
+            } catch (BadRequestException ex) {
+                outcome = "invalid_otp";
+                auditService.recordEvent(AuditAction.ACCOUNT_UNLOCK_FAILED, user.getId(), null, clientIp);
+                throw ex;
+            }
+
+            loginProtectionService.clearRecoveryStateByIpHash(user.getEmail(), verificationResult.originatingIpHash());
+            if (!verificationResult.originatingIpHash().equals(loginProtectionService.hashIpAddress(clientIp))) {
+                loginProtectionService.clearRecoveryState(user.getEmail(), clientIp);
+            }
+            auditService.recordEvent(AuditAction.ACCOUNT_UNLOCK_SUCCESS, user.getId(), null, clientIp);
+            outcome = "success";
+        } finally {
+            authMetricsService.recordOperation("unlock_account", outcome, sample);
+        }
     }
 
     private void resetFailedLoginState(User user) {
@@ -490,6 +589,15 @@ public class AuthService {
         );
     }
 
+    private AccountUnlockRequestResponse genericAccountUnlockResponse(String email) {
+        return new AccountUnlockRequestResponse(
+                email,
+                "If the account exists and unlock recovery is available, an account unlock code will be sent. The code expires in 10 minutes.",
+                accountUnlockOtpService.expiresInSeconds(),
+                accountUnlockOtpService.resendCooldownSeconds()
+        );
+    }
+
     private void clearFailedLoginState(User user) {
         user.setFailedAttempts(0);
         user.setLockUntil(null);
@@ -504,6 +612,9 @@ public class AuthService {
     }
 
     private void revokeAuthenticatedAccess(AuthenticatedUser authenticatedUser) {
+        if (authenticatedUser == null) {
+            return;
+        }
         if (authenticatedUser.getTokenId() != null && authenticatedUser.getTokenExpiresAt() != null) {
             long ttlSeconds = Math.max(
                     0,
@@ -518,43 +629,6 @@ public class AuthService {
             );
             sessionBlacklistService.blacklist(authenticatedUser.getSessionId(), Duration.ofSeconds(ttlSeconds));
         }
-    }
-
-    private void clearExpiredLock(User user) {
-        // Keep failedAttempts intact so the next failure can escalate the backoff window.
-        user.setLockUntil(null);
-        userRepository.save(user);
-    }
-
-    private boolean isLockActive(User user, Instant currentTime) {
-        Instant lockUntil = user.getLockUntil();
-        return lockUntil != null && currentTime.isBefore(lockUntil);
-    }
-
-    private boolean hasExpiredLock(User user, Instant currentTime) {
-        Instant lockUntil = user.getLockUntil();
-        return lockUntil != null && !currentTime.isBefore(lockUntil);
-    }
-
-    private Duration calculateLockDuration(int failedAttempts) {
-        return switch (failedAttempts) {
-            case 5 -> INITIAL_LOCK_DURATION;
-            case 6 -> SECOND_LOCK_DURATION;
-            case 7 -> THIRD_LOCK_DURATION;
-            default -> MAX_LOCK_DURATION;
-        };
-    }
-
-    private long secondsUntil(Instant lockUntil, Instant currentTime) {
-        if (lockUntil == null) {
-            return 0;
-        }
-        return Math.max(0, Duration.between(currentTime, lockUntil).getSeconds());
-    }
-
-    private String buildLockMessage(Instant lockUntil, Instant currentTime) {
-        long remainingSeconds = secondsUntil(lockUntil, currentTime);
-        return "Account is locked. Try again in " + formatRetryAfter(remainingSeconds) + ".";
     }
 
     private String formatRetryAfter(long remainingSeconds) {
@@ -581,5 +655,17 @@ public class AuthService {
 
     private String pluralize(long value) {
         return value == 1 ? "" : "s";
+    }
+
+    private void consumePasswordWorkFactor(String rawPassword) {
+        passwordEncoder.matches(rawPassword == null ? "" : rawPassword, dummyPasswordHash);
+    }
+
+    private AuditAction resolveThrottleAuditAction(String reason) {
+        return switch (reason) {
+            case "account_ip" -> AuditAction.LOGIN_ACCOUNT_IP_THROTTLED;
+            case "suspicious_ip", "ip_burst", "ip_sustained" -> AuditAction.LOGIN_SUSPICIOUS_IP_BLOCKED;
+            default -> AuditAction.LOGIN_IP_THROTTLED;
+        };
     }
 }

@@ -1,7 +1,9 @@
 package com.vikas.authsystem.controller;
 
+import com.vikas.authsystem.dto.DeleteAccountRequest;
 import com.vikas.authsystem.dto.UserProfileResponse;
 import com.vikas.authsystem.security.AuthenticatedUser;
+import com.vikas.authsystem.service.AccountManagementService;
 import com.vikas.authsystem.service.UserQueryService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -13,10 +15,15 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 
 import java.util.List;
 import java.util.UUID;
@@ -28,9 +35,11 @@ import java.util.UUID;
 public class UserController {
 
     private final UserQueryService userQueryService;
+    private final AccountManagementService accountManagementService;
 
-    public UserController(UserQueryService userQueryService) {
+    public UserController(UserQueryService userQueryService, AccountManagementService accountManagementService) {
         this.userQueryService = userQueryService;
+        this.accountManagementService = accountManagementService;
     }
 
     @GetMapping("/users/me")
@@ -46,6 +55,31 @@ public class UserController {
     })
     public UserProfileResponse me(@AuthenticationPrincipal AuthenticatedUser authenticatedUser) {
         return userQueryService.getUserProfile(authenticatedUser.getUserId());
+    }
+
+    @PostMapping("/users/me/delete-account")
+    @Operation(
+            summary = "Soft-delete the authenticated account",
+            description = "Soft-deletes the authenticated user account after verifying the current password and typed email confirmation. The operation revokes all active refresh-token sessions, blacklists the current access token and session, marks the account as deleted, and tombstones the stored email so the original address can be reused safely."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "Account deleted", content = @Content),
+            @ApiResponse(responseCode = "400", description = "Validation failed or the confirmation email does not match the authenticated account",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "401", description = "Authentication is required or current password is invalid",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
+    })
+    public ResponseEntity<Void> deleteMyAccount(
+            @Valid @RequestBody DeleteAccountRequest request,
+            @AuthenticationPrincipal AuthenticatedUser authenticatedUser,
+            HttpServletRequest servletRequest
+    ) {
+        accountManagementService.deleteAuthenticatedAccount(
+                authenticatedUser,
+                request,
+                extractClientIp(servletRequest)
+        );
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/users/{userId}")
@@ -85,5 +119,13 @@ public class UserController {
     })
     public List<UserProfileResponse> listUsers() {
         return userQueryService.listUsers();
+    }
+
+    private String extractClientIp(HttpServletRequest request) {
+        String xForwardedFor = request.getHeader("X-Forwarded-For");
+        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
+            return xForwardedFor.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
     }
 }

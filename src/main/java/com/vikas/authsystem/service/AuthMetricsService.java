@@ -64,10 +64,57 @@ public class AuthMetricsService {
     }
 
     public void recordRateLimitDecision(String limiter, String outcome) {
+        recordRateLimitDecision(limiter, "default", outcome);
+    }
+
+    public void recordRateLimitDecision(String limiter, String scope, String outcome) {
         counter(
                 "auth.rate_limit.total",
                 List.of(
                         Tag.of("limiter", normalizeTag(limiter)),
+                        Tag.of("scope", normalizeTag(scope)),
+                        Tag.of("outcome", normalizeTag(outcome))
+                )
+        ).increment();
+    }
+
+    public void recordLoginAttempt(String outcome) {
+        counter(
+                "auth.login.attempts.total",
+                List.of(Tag.of("outcome", normalizeTag(outcome)))
+        ).increment();
+    }
+
+    public void recordLoginFailure(String reason) {
+        counter(
+                "auth.login.failures.total",
+                List.of(Tag.of("reason", normalizeTag(reason)))
+        ).increment();
+    }
+
+    public void recordProtectionAction(String scope, String action) {
+        counter(
+                "auth.account.protection.total",
+                List.of(
+                        Tag.of("scope", normalizeTag(scope)),
+                        Tag.of("action", normalizeTag(action))
+                )
+        ).increment();
+    }
+
+    public void recordSuspiciousIpAction(String action) {
+        counter(
+                "auth.ip.burst.total",
+                List.of(Tag.of("action", normalizeTag(action)))
+        ).increment();
+    }
+
+    public void recordRedisDecision(String component, String operation, String outcome) {
+        counter(
+                "auth.redis.operation.total",
+                List.of(
+                        Tag.of("component", normalizeTag(component)),
+                        Tag.of("operation", normalizeTag(operation)),
                         Tag.of("outcome", normalizeTag(outcome))
                 )
         ).increment();

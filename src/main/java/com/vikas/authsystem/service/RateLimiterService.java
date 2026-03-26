@@ -11,11 +11,12 @@ import java.util.List;
 @Service
 public class RateLimiterService {
 
-    private static final String LOGIN_KEY_PREFIX = "auth:rl:login:";
     private static final String OTP_GENERATION_KEY_PREFIX = "auth:rl:otp-generation:";
     private static final String OTP_VERIFICATION_KEY_PREFIX = "auth:rl:otp-verification:";
     private static final String PASSWORD_RESET_REQUEST_KEY_PREFIX = "auth:rl:password-reset-request:";
     private static final String PASSWORD_RESET_CONFIRMATION_KEY_PREFIX = "auth:rl:password-reset-confirmation:";
+    private static final String ACCOUNT_UNLOCK_REQUEST_KEY_PREFIX = "auth:rl:account-unlock-request:";
+    private static final String ACCOUNT_UNLOCK_CONFIRMATION_KEY_PREFIX = "auth:rl:account-unlock-confirmation:";
     private static final DefaultRedisScript<Long> INCREMENT_WITH_TTL_SCRIPT = new DefaultRedisScript<>(
             """
             local current = redis.call('INCR', KEYS[1])
@@ -41,79 +42,117 @@ public class RateLimiterService {
         this.authMetricsService = authMetricsService;
     }
 
-    public void validateLoginRateLimit(String email, String ipAddress) {
-        String key = LOGIN_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
-        validateLimit(
-                key,
-                "login",
-                rateLimitProperties.getLogin(),
-                "Too many login attempts. Please try again later."
-        );
-    }
-
     public void validateOtpGenerationRateLimit(String email, String ipAddress) {
-        String key = OTP_GENERATION_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
-        validateLimit(
-                key,
+        validateScopedLimit(
+                OTP_GENERATION_KEY_PREFIX,
                 "otp_generation",
                 rateLimitProperties.getOtpGeneration(),
+                normalize(email),
+                normalize(ipAddress),
                 "Too many OTP requests. Please wait before requesting another code."
         );
     }
 
     public void validateOtpVerificationRateLimit(String email, String ipAddress) {
-        String key = OTP_VERIFICATION_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
-        validateLimit(
-                key,
+        validateScopedLimit(
+                OTP_VERIFICATION_KEY_PREFIX,
                 "otp_verification",
                 rateLimitProperties.getOtpVerification(),
+                normalize(email),
+                normalize(ipAddress),
                 "Too many OTP verification attempts. Please request a new code or try again later."
         );
     }
 
     public void validatePasswordResetRequestRateLimit(String email, String ipAddress) {
-        String key = PASSWORD_RESET_REQUEST_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
-        validateLimit(
-                key,
+        validateScopedLimit(
+                PASSWORD_RESET_REQUEST_KEY_PREFIX,
                 "password_reset_request",
                 rateLimitProperties.getPasswordResetRequest(),
+                normalize(email),
+                normalize(ipAddress),
                 "Too many password reset requests. Please try again later."
         );
     }
 
     public void validatePasswordResetConfirmationRateLimit(String email, String ipAddress) {
-        String key = PASSWORD_RESET_CONFIRMATION_KEY_PREFIX + normalize(email) + ":" + normalize(ipAddress);
-        validateLimit(
-                key,
+        validateScopedLimit(
+                PASSWORD_RESET_CONFIRMATION_KEY_PREFIX,
                 "password_reset_confirmation",
                 rateLimitProperties.getPasswordResetConfirmation(),
+                normalize(email),
+                normalize(ipAddress),
                 "Too many password reset attempts. Please request a new code or try again later."
         );
     }
 
-    private void validateLimit(String key, String limiter, RateLimitProperties.Limit limit, String errorMessage) {
+    public void validateAccountUnlockRequestRateLimit(String email, String ipAddress) {
+        validateScopedLimit(
+                ACCOUNT_UNLOCK_REQUEST_KEY_PREFIX,
+                "account_unlock_request",
+                rateLimitProperties.getAccountUnlockRequest(),
+                normalize(email),
+                normalize(ipAddress),
+                "Too many account unlock requests. Please try again later."
+        );
+    }
+
+    public void validateAccountUnlockConfirmationRateLimit(String email, String ipAddress) {
+        validateScopedLimit(
+                ACCOUNT_UNLOCK_CONFIRMATION_KEY_PREFIX,
+                "account_unlock_confirmation",
+                rateLimitProperties.getAccountUnlockConfirmation(),
+                normalize(email),
+                normalize(ipAddress),
+                "Too many account unlock attempts. Please request a new code or try again later."
+        );
+    }
+
+    private void validateScopedLimit(
+            String keyPrefix,
+            String limiter,
+            RateLimitProperties.ScopedLimit scopedLimit,
+            String accountKey,
+            String ipKey,
+            String errorMessage
+    ) {
+        validateLimit(keyPrefix + "account:" + accountKey, limiter, "account", scopedLimit.getPerAccount(), errorMessage);
+        validateLimit(keyPrefix + "ip:" + ipKey, limiter, "ip", scopedLimit.getPerIp(), errorMessage);
+        validateLimit(keyPrefix + "account-ip:" + accountKey + ":" + ipKey, limiter, "account_ip", scopedLimit.getPerAccountIp(), errorMessage);
+    }
+
+    private void validateLimit(
+            String key,
+            String limiter,
+            String scope,
+            RateLimitProperties.Limit limit,
+            String errorMessage
+    ) {
+        if (limit.getMaxAttempts() <= 0 || limit.getWindowSeconds() <= 0) {
+            return;
+        }
         Long currentCount;
         try {
             currentCount = redisTemplate.execute(
                     INCREMENT_WITH_TTL_SCRIPT,
                     List.of(key),
                     String.valueOf(limit.getWindowSeconds())
-            );
+                );
         } catch (RuntimeException ex) {
-            authMetricsService.recordRateLimitDecision(limiter, "backend_error");
+            authMetricsService.recordRateLimitDecision(limiter, scope, "backend_error");
             throw ex;
         }
 
         if (currentCount == null) {
-            authMetricsService.recordRateLimitDecision(limiter, "backend_error");
+            authMetricsService.recordRateLimitDecision(limiter, scope, "backend_error");
             throw new IllegalStateException("Failed to evaluate rate limit");
         }
 
         if (currentCount > limit.getMaxAttempts()) {
-            authMetricsService.recordRateLimitDecision(limiter, "rejected");
+            authMetricsService.recordRateLimitDecision(limiter, scope, "rejected");
             throw new TooManyRequestsException(errorMessage, retryAfterSeconds(key));
         }
-        authMetricsService.recordRateLimitDecision(limiter, "allowed");
+        authMetricsService.recordRateLimitDecision(limiter, scope, "allowed");
     }
 
     private long retryAfterSeconds(String key) {

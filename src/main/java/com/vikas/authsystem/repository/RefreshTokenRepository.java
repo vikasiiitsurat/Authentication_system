@@ -23,6 +23,8 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
 
     List<RefreshToken> findAllByUser_IdAndSessionId(UUID userId, UUID sessionId);
 
+    List<RefreshToken> findAllByUser_IdAndSessionIdOrderByCreatedAtDesc(UUID userId, UUID sessionId);
+
     @Modifying
     @Query("""
             delete from RefreshToken rt

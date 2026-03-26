@@ -41,7 +41,9 @@ class AuthMetricsServiceTest {
         Timer.Sample sample = authMetricsService.startTimer();
 
         authMetricsService.recordAuditPersistence(AuditAction.LOGIN_FAILED, "persisted", sample);
-        authMetricsService.recordRateLimitDecision("otp_generation", "rejected");
+        authMetricsService.recordRateLimitDecision("otp_generation", "ip", "rejected");
+        authMetricsService.recordProtectionAction("account", "activated");
+        authMetricsService.recordLoginAttempt("success");
 
         assertEquals(
                 1.0,
@@ -63,7 +65,23 @@ class AuthMetricsServiceTest {
                 1.0,
                 meterRegistry.get("auth.rate_limit.total")
                         .tag("limiter", "otp_generation")
+                        .tag("scope", "ip")
                         .tag("outcome", "rejected")
+                        .counter()
+                        .count()
+        );
+        assertEquals(
+                1.0,
+                meterRegistry.get("auth.account.protection.total")
+                        .tag("scope", "account")
+                        .tag("action", "activated")
+                        .counter()
+                        .count()
+        );
+        assertEquals(
+                1.0,
+                meterRegistry.get("auth.login.attempts.total")
+                        .tag("outcome", "success")
                         .counter()
                         .count()
         );

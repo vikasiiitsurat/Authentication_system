@@ -23,7 +23,7 @@ public class UserQueryService {
     @Transactional(readOnly = true)
     @PreAuthorize("hasRole('ADMIN') or #userId == authentication.principal.userId")
     public UserProfileResponse getUserProfile(UUID userId) {
-        User user = userRepository.findById(userId)
+        User user = userRepository.findActiveById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         return toUserProfile(user);
     }
@@ -31,7 +31,7 @@ public class UserQueryService {
     @Transactional(readOnly = true)
     @PreAuthorize("hasRole('ADMIN')")
     public List<UserProfileResponse> listUsers() {
-        return userRepository.findAll().stream()
+        return userRepository.findAllByDeletedAtIsNull().stream()
                 .map(this::toUserProfile)
                 .toList();
     }

@@ -20,8 +20,9 @@ public class OpenApiConfig {
                         .version("0.0.1-SNAPSHOT")
                         .description(
                                 "Production-grade authentication and session management API covering " +
-                                        "registration, login, JWT token lifecycle, active session controls, " +
-                                        "email verification OTP flows, and user profile access."
+                                        "registration, anti-enumeration login, Redis-backed distributed abuse protection, " +
+                                        "JWT token lifecycle, active session controls, global logout, email verification OTP flows, " +
+                                        "password reset flows, account unlock recovery, account deletion, and user profile access."
                         )
                         .contact(new Contact()
                                 .name("Auth System API Support")
@@ -46,6 +47,10 @@ public class OpenApiConfig {
                 .pathsToMatch(
                         "/api/auth/register",
                         "/api/auth/login",
+                        "/api/auth/forgot-password",
+                        "/api/auth/request-account-unlock",
+                        "/api/auth/reset-password",
+                        "/api/auth/unlock-account",
                         "/api/users/**",
                         "/api/admin/users"
                 )
@@ -59,6 +64,7 @@ public class OpenApiConfig {
                 .pathsToMatch(
                         "/api/auth/refresh",
                         "/api/auth/logout",
+                        "/api/auth/logout-all",
                         "/api/sessions/**"
                 )
                 .build();
@@ -71,7 +77,11 @@ public class OpenApiConfig {
                 .pathsToMatch(
                         "/api/auth/change-password",
                         "/api/auth/verify-email",
-                        "/api/auth/resend-verification-otp"
+                        "/api/auth/resend-verification-otp",
+                        "/api/auth/forgot-password",
+                        "/api/auth/reset-password",
+                        "/api/auth/request-account-unlock",
+                        "/api/auth/unlock-account"
                 )
                 .build();
     }

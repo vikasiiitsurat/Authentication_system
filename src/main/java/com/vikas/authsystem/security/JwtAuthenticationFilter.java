@@ -73,7 +73,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
             Instant tokenExpiresAt = claims.getExpiration() == null ? null : claims.getExpiration().toInstant();
             Instant tokenIssuedAt = claims.getIssuedAt() == null ? null : claims.getIssuedAt().toInstant();
-            if (isPasswordChangeNewerThanToken(userId, tokenIssuedAt)) {
+            if (isSecurityStateNewerThanToken(userId, tokenIssuedAt)) {
                 filterChain.doFilter(request, response);
                 return;
             }
@@ -94,13 +94,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
-    private boolean isPasswordChangeNewerThanToken(UUID userId, Instant tokenIssuedAt) {
+    private boolean isSecurityStateNewerThanToken(UUID userId, Instant tokenIssuedAt) {
         return userRepository.findById(userId)
                 .map(user -> {
+                    if (user.getDeletedAt() != null) {
+                        return true;
+                    }
                     Instant passwordChangedAt = user.getPasswordChangedAt();
-                    return passwordChangedAt != null && (tokenIssuedAt == null || tokenIssuedAt.isBefore(passwordChangedAt));
+                    Instant sessionInvalidatedAt = user.getSessionInvalidatedAt();
+                    return isTokenStale(tokenIssuedAt, passwordChangedAt) || isTokenStale(tokenIssuedAt, sessionInvalidatedAt);
                 })
                 .orElse(true);
+    }
+
+    private boolean isTokenStale(Instant tokenIssuedAt, Instant invalidationMarker) {
+        return invalidationMarker != null && (tokenIssuedAt == null || !tokenIssuedAt.isAfter(invalidationMarker));
     }
 
     private UUID extractUserId(Claims claims) {

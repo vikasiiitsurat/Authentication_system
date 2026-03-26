@@ -5,30 +5,54 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "app.rate-limit")
 public class RateLimitProperties {
 
-    private final Limit login = new Limit();
-    private final Limit otpGeneration = new Limit();
-    private final Limit otpVerification = new Limit();
-    private final Limit passwordResetRequest = new Limit();
-    private final Limit passwordResetConfirmation = new Limit();
+    private final ScopedLimit otpGeneration = new ScopedLimit();
+    private final ScopedLimit otpVerification = new ScopedLimit();
+    private final ScopedLimit passwordResetRequest = new ScopedLimit();
+    private final ScopedLimit passwordResetConfirmation = new ScopedLimit();
+    private final ScopedLimit accountUnlockRequest = new ScopedLimit();
+    private final ScopedLimit accountUnlockConfirmation = new ScopedLimit();
 
-    public Limit getLogin() {
-        return login;
-    }
-
-    public Limit getOtpGeneration() {
+    public ScopedLimit getOtpGeneration() {
         return otpGeneration;
     }
 
-    public Limit getOtpVerification() {
+    public ScopedLimit getOtpVerification() {
         return otpVerification;
     }
 
-    public Limit getPasswordResetRequest() {
+    public ScopedLimit getPasswordResetRequest() {
         return passwordResetRequest;
     }
 
-    public Limit getPasswordResetConfirmation() {
+    public ScopedLimit getPasswordResetConfirmation() {
         return passwordResetConfirmation;
+    }
+
+    public ScopedLimit getAccountUnlockRequest() {
+        return accountUnlockRequest;
+    }
+
+    public ScopedLimit getAccountUnlockConfirmation() {
+        return accountUnlockConfirmation;
+    }
+
+    public static class ScopedLimit {
+
+        private final Limit perAccount = new Limit();
+        private final Limit perIp = new Limit();
+        private final Limit perAccountIp = new Limit();
+
+        public Limit getPerAccount() {
+            return perAccount;
+        }
+
+        public Limit getPerIp() {
+            return perIp;
+        }
+
+        public Limit getPerAccountIp() {
+            return perAccountIp;
+        }
     }
 
     public static class Limit {

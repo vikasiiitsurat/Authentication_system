@@ -60,6 +60,15 @@ public class User {
     @Column(name = "password_changed_at")
     private Instant passwordChangedAt;
 
+    @Column(name = "session_invalidated_at")
+    private Instant sessionInvalidatedAt;
+
+    @Column(name = "deleted_at")
+    private Instant deletedAt;
+
+    @Column(name = "deleted_email_hash", length = 64)
+    private String deletedEmailHash;
+
     @PrePersist
     public void prePersist() {
         email = normalizeEmail(email);
@@ -168,5 +177,29 @@ public class User {
 
     public void setPasswordChangedAt(Instant passwordChangedAt) {
         this.passwordChangedAt = passwordChangedAt;
+    }
+
+    public Instant getSessionInvalidatedAt() {
+        return sessionInvalidatedAt;
+    }
+
+    public void setSessionInvalidatedAt(Instant sessionInvalidatedAt) {
+        this.sessionInvalidatedAt = sessionInvalidatedAt;
+    }
+
+    public Instant getDeletedAt() {
+        return deletedAt;
+    }
+
+    public void setDeletedAt(Instant deletedAt) {
+        this.deletedAt = deletedAt;
+    }
+
+    public String getDeletedEmailHash() {
+        return deletedEmailHash;
+    }
+
+    public void setDeletedEmailHash(String deletedEmailHash) {
+        this.deletedEmailHash = deletedEmailHash;
     }
 }

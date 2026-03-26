@@ -10,15 +10,19 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface UserRepository extends JpaRepository<User, UUID> {
+    @Query("select user from User user where user.email = :email and user.deletedAt is null")
     Optional<User> findByEmail(String email);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("select user from User user where user.email = :email")
+    @Query("select user from User user where user.email = :email and user.deletedAt is null")
     Optional<User> findByEmailForUpdate(String email);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("select user from User user where user.id = :id")
+    @Query("select user from User user where user.id = :id and user.deletedAt is null")
     Optional<User> findByIdForUpdate(UUID id);
 
-    boolean existsByEmail(String email);
+    @Query("select user from User user where user.id = :id and user.deletedAt is null")
+    Optional<User> findActiveById(UUID id);
+
+    java.util.List<User> findAllByDeletedAtIsNull();
 }

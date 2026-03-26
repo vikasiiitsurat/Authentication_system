@@ -3,7 +3,10 @@ package com.vikas.authsystem.controller;
 import com.vikas.authsystem.dto.LoginRequest;
 import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.LogoutRequest;
+import com.vikas.authsystem.dto.AccountUnlockRequest;
+import com.vikas.authsystem.dto.AccountUnlockRequestResponse;
 import com.vikas.authsystem.dto.ForgotPasswordRequest;
+import com.vikas.authsystem.dto.GlobalLogoutResponse;
 import com.vikas.authsystem.dto.PasswordChangeRequest;
 import com.vikas.authsystem.dto.PasswordResetRequestResponse;
 import com.vikas.authsystem.dto.RefreshTokenRequest;
@@ -11,6 +14,7 @@ import com.vikas.authsystem.dto.ResendVerificationOtpRequest;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
 import com.vikas.authsystem.dto.ResetPasswordRequest;
+import com.vikas.authsystem.dto.VerifyAccountUnlockRequest;
 import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
 import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
 import com.vikas.authsystem.security.AuthenticatedUser;
@@ -75,7 +79,7 @@ public class AuthController {
     @PostMapping("/login")
     @Operation(
             summary = "Authenticate and create a session",
-            description = "Validates user credentials, creates a refresh-token-backed session, and returns a JWT access token together with a refresh token.",
+            description = "Validates user credentials behind layered Redis-backed abuse protection. The endpoint applies per-IP throttling, adaptive per-account+IP cooldowns, and short-lived per-account protection signals while keeping public failure responses generic to reduce user enumeration risk and avoid user-hostile long-lived account locks.",
             tags = {"Authentication"}
     )
     @ApiResponses({
@@ -83,18 +87,13 @@ public class AuthController {
                     content = @Content(schema = @Schema(implementation = LoginResponse.class))),
             @ApiResponse(responseCode = "400", description = "Validation failed",
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "401", description = "Invalid credentials",
+            @ApiResponse(responseCode = "401", description = "Invalid email or password",
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "403", description = "Email verification is required before login",
-                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "423", description = "Account is temporarily locked due to repeated failures",
-                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "429", description = "Login rate limit exceeded",
+            @ApiResponse(responseCode = "429", description = "Source-specific login rate limit exceeded",
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
     })
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest servletRequest) {
         String clientIp = extractClientIp(servletRequest);
-        rateLimiterService.validateLoginRateLimit(request.email().trim().toLowerCase(), clientIp);
         LoginResponse response = authService.login(request, clientIp);
         return ResponseEntity.ok(response);
     }
@@ -122,7 +121,7 @@ public class AuthController {
     @PostMapping("/verify-email")
     @Operation(
             summary = "Verify account email with OTP",
-            description = "Validates the email verification OTP for a pending account and marks the email address as verified.",
+            description = "Validates the email verification OTP for a pending account and marks the email address as verified. Verification attempts are throttled per account, per IP, and per account+IP combination.",
             tags = {"Password Reset / OTP"}
     )
     @ApiResponses({
@@ -146,7 +145,7 @@ public class AuthController {
     @PostMapping("/resend-verification-otp")
     @Operation(
             summary = "Resend email verification OTP",
-            description = "Issues a new email verification OTP for an existing unverified account, subject to resend cooldown and rate-limit rules.",
+            description = "Issues a new email verification OTP for an existing unverified account, subject to resend cooldown and layered rate limits across account, IP, and account+IP scopes.",
             tags = {"Password Reset / OTP"}
     )
     @ApiResponses({
@@ -170,7 +169,7 @@ public class AuthController {
     @PostMapping("/forgot-password")
     @Operation(
             summary = "Request a password reset OTP",
-            description = "Accepts a password reset request, issues a reset OTP when the account is eligible, and returns a generic response that does not disclose account existence.",
+            description = "Accepts a password reset request, issues a reset OTP when the account is eligible, and returns a generic response that does not disclose account existence. Request throttling is enforced across account, IP, and account+IP scopes.",
             tags = {"Password Reset / OTP"}
     )
     @ApiResponses({
@@ -194,7 +193,7 @@ public class AuthController {
     @PostMapping("/reset-password")
     @Operation(
             summary = "Reset password with email OTP",
-            description = "Verifies the emailed password reset OTP, rotates the password, revokes all active sessions, and invalidates previously issued access tokens.",
+            description = "Verifies the emailed password reset OTP, rotates the password, revokes all active sessions, and invalidates previously issued access tokens. OTP verification is throttled across account, IP, and account+IP scopes.",
             tags = {"Password Reset / OTP"}
     )
     @ApiResponses({
@@ -214,10 +213,57 @@ public class AuthController {
         return ResponseEntity.noContent().build();
     }
 
+    @PostMapping("/request-account-unlock")
+    @Operation(
+            summary = "Request an account unlock OTP",
+            description = "Accepts an account unlock request when login protection is active, sends an unlock OTP to the account email if recovery is available, and returns a generic response that does not disclose account state.",
+            tags = {"Password Reset / OTP"}
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "Account unlock request accepted",
+                    content = @Content(schema = @Schema(implementation = AccountUnlockRequestResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Validation failed",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "429", description = "Account unlock request rate limit exceeded",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
+    })
+    public ResponseEntity<AccountUnlockRequestResponse> requestAccountUnlock(
+            @Valid @RequestBody AccountUnlockRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        String clientIp = extractClientIp(servletRequest);
+        rateLimiterService.validateAccountUnlockRequestRateLimit(request.email(), clientIp);
+        AccountUnlockRequestResponse response = authService.requestAccountUnlock(request, clientIp);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+    }
+
+    @PostMapping("/unlock-account")
+    @Operation(
+            summary = "Unlock account with email OTP",
+            description = "Verifies the emailed account unlock OTP and clears the Redis-backed account protection state for the account and originating client context.",
+            tags = {"Password Reset / OTP"}
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "Account unlocked successfully", content = @Content),
+            @ApiResponse(responseCode = "400", description = "Validation failed, the unlock request is invalid, or the OTP is invalid",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "429", description = "Account unlock verification rate limit exceeded",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
+    })
+    public ResponseEntity<Void> unlockAccount(
+            @Valid @RequestBody VerifyAccountUnlockRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        String clientIp = extractClientIp(servletRequest);
+        rateLimiterService.validateAccountUnlockConfirmationRateLimit(request.email(), clientIp);
+        authService.unlockAccount(request, clientIp);
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/logout")
     @Operation(
             summary = "Log out the current session",
-            description = "Revokes the supplied refresh token and blacklists the current access token when an authenticated session is present.",
+            description = "Revokes the authenticated session identified by the bearer access token, blacklists the current access token immediately, and tolerates missing or already-rotated refresh tokens for idempotent client logout.",
             tags = {"Token Management"}
     )
     @SecurityRequirement(name = "bearerAuth")
@@ -225,17 +271,40 @@ public class AuthController {
             @ApiResponse(responseCode = "204", description = "Logout completed", content = @Content),
             @ApiResponse(responseCode = "400", description = "Validation failed",
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "401", description = "Authentication is missing or the refresh token is invalid",
+            @ApiResponse(responseCode = "401", description = "Authentication is missing or invalid",
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
     })
     public ResponseEntity<Void> logout(
-            @Valid @RequestBody LogoutRequest request,
+            @Valid @RequestBody(required = false) LogoutRequest request,
             HttpServletRequest servletRequest,
             @AuthenticationPrincipal AuthenticatedUser authenticatedUser
     ) {
         String clientIp = extractClientIp(servletRequest);
-        authService.logout(request, authenticatedUser, clientIp);
+        // The request body is optional legacy input; the bearer token identifies the session to revoke.
+        authService.logout(authenticatedUser, clientIp);
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/logout-all")
+    @Operation(
+            summary = "Globally log out the authenticated account",
+            description = "Revokes every active refresh-token session for the authenticated user, blacklists the current access token and session, and writes a durable PostgreSQL invalidation timestamp so previously issued JWT access tokens are rejected across all app instances.",
+            tags = {"Token Management"}
+    )
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Global logout completed",
+                    content = @Content(schema = @Schema(implementation = GlobalLogoutResponse.class))),
+            @ApiResponse(responseCode = "401", description = "Authentication is missing or invalid",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
+    })
+    public ResponseEntity<GlobalLogoutResponse> logoutAll(
+            HttpServletRequest servletRequest,
+            @AuthenticationPrincipal AuthenticatedUser authenticatedUser
+    ) {
+        String clientIp = extractClientIp(servletRequest);
+        GlobalLogoutResponse response = authService.logoutAll(authenticatedUser, clientIp);
+        return ResponseEntity.ok(response);
     }
 
     @PostMapping("/change-password")

@@ -25,7 +25,6 @@ import java.time.Instant;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
-import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -165,8 +164,8 @@ public class RefreshTokenService {
     }
 
     @Transactional
-    public void revokeAllTokensForUser(UUID userId) {
-        revokeAllUserTokens(userId);
+    public int revokeAllTokensForUser(UUID userId) {
+        return revokeAllUserTokens(userId);
     }
 
     @Transactional(readOnly = true)
@@ -182,6 +181,27 @@ public class RefreshTokenService {
                 .orElseThrow(() -> new ResourceNotFoundException("Session not found"));
         revokeToken(activeSession, null);
         blacklistSession(activeSession);
+    }
+
+    @Transactional
+    public SessionRevocationResult revokeSessionIfPresent(UUID userId, UUID sessionId) {
+        List<RefreshToken> sessionTokens =
+                refreshTokenRepository.findAllByUser_IdAndSessionIdOrderByCreatedAtDesc(userId, sessionId);
+        String deviceId = sessionTokens.stream()
+                .map(RefreshToken::getDeviceId)
+                .filter(device -> device != null && !device.isBlank())
+                .findFirst()
+                .orElse(null);
+        int revokedTokens = 0;
+        for (RefreshToken token : sessionTokens) {
+            if (token.getRevokedAt() != null) {
+                continue;
+            }
+            revokeToken(token, null);
+            blacklistSession(token);
+            revokedTokens++;
+        }
+        return new SessionRevocationResult(sessionId, deviceId, revokedTokens);
     }
 
     @Transactional
@@ -223,6 +243,11 @@ public class RefreshTokenService {
     }
 
     private RefreshTokenValidationFailure validateRefreshTokenForRotation(RefreshToken refreshToken, String deviceId) {
+        if (refreshToken.getUser().getDeletedAt() != null) {
+            revokeAllUserTokens(refreshToken.getUser().getId());
+            return RefreshTokenValidationFailure.ACCOUNT_DELETED;
+        }
+
         if (refreshToken.getExpiryDate().isBefore(Instant.now(clock))) {
             revokeAllUserTokens(refreshToken.getUser().getId());
             return RefreshTokenValidationFailure.EXPIRED;
@@ -250,11 +275,14 @@ public class RefreshTokenService {
         }
     }
 
-    private void revokeAllUserTokens(UUID userId) {
+    private int revokeAllUserTokens(UUID userId) {
+        int revokedTokens = 0;
         for (RefreshToken token : refreshTokenRepository.findAllByUser_IdAndRevokedAtIsNull(userId)) {
             revokeToken(token, null);
             blacklistSession(token);
+            revokedTokens++;
         }
+        return revokedTokens;
     }
 
     private void revokeToken(RefreshToken token, String replacedByTokenHash) {
@@ -300,7 +328,15 @@ public class RefreshTokenService {
     ) {
     }
 
+    public record SessionRevocationResult(
+            UUID sessionId,
+            String deviceId,
+            int revokedTokens
+    ) {
+    }
+
     private enum RefreshTokenValidationFailure {
+        ACCOUNT_DELETED("account_deleted", "Account is no longer active"),
         EXPIRED("expired_token", "Refresh token has expired"),
         REPLAY_DETECTED("replay_detected", "Refresh token reuse detected"),
         DEVICE_MISMATCH("device_mismatch", "Refresh token does not match device");
