@@ -13,6 +13,8 @@ import io.micrometer.core.instrument.Timer;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -81,11 +83,9 @@ public class AccountManagementService {
                 throw new BadRequestException("Account deletion confirmation email does not match the authenticated account");
             }
 
-            refreshTokenService.revokeAllTokensForUser(user.getId());
-            revokeAuthenticatedAccess(authenticatedUser);
-            loginProtectionService.clearSuccess(user.getEmail(), clientIp);
+            String activeEmail = user.getEmail();
             softDeleteUser(user);
-            auditService.recordEvent(AuditAction.ACCOUNT_DELETE, user.getId(), request.deviceId(), clientIp);
+            schedulePostCommitCleanup(user.getId(), authenticatedUser, activeEmail, clientIp, request.deviceId());
             outcome = "success";
         } finally {
             authMetricsService.recordOperation("delete_account", outcome, sample);
@@ -114,7 +114,7 @@ public class AccountManagementService {
         user.setDeletedAt(now);
         user.setDeletedEmailHash(hashValue(normalizedEmail));
         user.setEmail(buildDeletedEmailAlias(user.getId()));
-        user.setPasswordHash(passwordEncoder.encode("deleted-account:" + user.getId() + ":" + now));
+        user.setPasswordHash(passwordEncoder.encode(buildDeletedPasswordSecret(user.getId(), now)));
         user.setEmailVerified(false);
         user.setEmailVerifiedAt(null);
         user.setPasswordChangedAt(now);
@@ -122,8 +122,37 @@ public class AccountManagementService {
         userRepository.save(user);
     }
 
+    private void schedulePostCommitCleanup(
+            java.util.UUID userId,
+            AuthenticatedUser authenticatedUser,
+            String activeEmail,
+            String clientIp,
+            String deviceId
+    ) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            refreshTokenService.revokeAllTokensForUser(userId);
+            revokeAuthenticatedAccess(authenticatedUser);
+            loginProtectionService.clearSuccess(activeEmail, clientIp);
+            auditService.recordEvent(AuditAction.ACCOUNT_DELETE, userId, deviceId, clientIp);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                refreshTokenService.revokeAllTokensForUser(userId);
+                revokeAuthenticatedAccess(authenticatedUser);
+                loginProtectionService.clearSuccess(activeEmail, clientIp);
+                auditService.recordEvent(AuditAction.ACCOUNT_DELETE, userId, deviceId, clientIp);
+            }
+        });
+    }
+
     private String buildDeletedEmailAlias(java.util.UUID userId) {
         return "deleted+" + userId + "@deleted.auth.local";
+    }
+
+    private String buildDeletedPasswordSecret(java.util.UUID userId, Instant deletedAt) {
+        return "deleted:" + hashValue(userId + ":" + deletedAt).substring(0, 32);
     }
 
     private String hashValue(String value) {

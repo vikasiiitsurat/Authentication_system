@@ -481,6 +481,38 @@ class AuthServiceTest {
     }
 
     @Test
+    void registerCreatesFreshAccountWhenPreviousAccountWasDeleted() {
+        RegisterRequest request = new RegisterRequest("user@example.com", "super-secret");
+        EmailVerificationOtpService.OtpIssueResult otpIssueResult =
+                new EmailVerificationOtpService.OtpIssueResult("482913", 180, 30);
+        when(userRepository.findByEmail("user@example.com")).thenReturn(Optional.empty());
+        when(passwordEncoder.encode("super-secret")).thenReturn("encoded-password");
+        when(emailVerificationOtpService.issueOtp(any(UUID.class))).thenReturn(otpIssueResult);
+
+        RegisterResponse response = authService.register(request, "127.0.0.1");
+
+        assertEquals("user@example.com", response.email());
+        assertTrue(response.emailVerificationRequired());
+        verify(otpDeliveryService).sendVerificationOtp("user@example.com", "482913", 180);
+        verify(authMetricsService).recordOperation("register", "success", null);
+    }
+
+    @Test
+    void loginReturnsGenericUnauthorizedForDeletedAccountEmail() {
+        when(userRepository.findByEmail("user@example.com")).thenReturn(Optional.empty());
+        when(passwordEncoder.matches("correct-password", "dummy-encoded")).thenReturn(false);
+
+        UnauthorizedException exception = assertThrows(
+                UnauthorizedException.class,
+                () -> authService.login(new LoginRequest("user@example.com", "correct-password", "device-1"), "127.0.0.1")
+        );
+
+        assertEquals("Invalid email or password", exception.getMessage());
+        verify(refreshTokenService, never()).generateRawRefreshToken();
+        verify(authMetricsService).recordOperation("login", "invalid_credentials", null);
+    }
+
+    @Test
     void verifyEmailOtpMarksUserAsVerified() {
         User user = baseUser();
         user.setEmailVerified(false);

@@ -11,8 +11,10 @@ import com.vikas.authsystem.security.SessionBlacklistService;
 import com.vikas.authsystem.security.TokenBlacklistService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -24,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -70,6 +74,7 @@ class AccountManagementServiceTest {
         );
         when(userRepository.findByIdForUpdate(user.getId())).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("StrongPass123", user.getPasswordHash())).thenReturn(true);
+        when(passwordEncoder.encode(anyString())).thenReturn("deleted-password-hash");
 
         accountManagementService.deleteAuthenticatedAccount(
                 authenticatedUser,
@@ -85,8 +90,12 @@ class AccountManagementServiceTest {
         assertEquals(FIXED_NOW, user.getDeletedAt());
         assertEquals(FIXED_NOW, user.getPasswordChangedAt());
         assertEquals(FIXED_NOW, user.getSessionInvalidatedAt());
+        assertEquals("deleted-password-hash", user.getPasswordHash());
         assertEquals("deleted+" + user.getId() + "@deleted.auth.local", user.getEmail());
         assertNotNull(user.getDeletedEmailHash());
+        ArgumentCaptor<String> deletedPasswordCaptor = ArgumentCaptor.forClass(String.class);
+        verify(passwordEncoder).encode(deletedPasswordCaptor.capture());
+        assertTrue(deletedPasswordCaptor.getValue().getBytes(StandardCharsets.UTF_8).length <= 72);
         verify(authMetricsService).recordOperation("delete_account", "success", null);
     }
 

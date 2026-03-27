@@ -42,7 +42,7 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(jwtUtil(), tokenBlacklistService, sessionBlacklistService, userRepository);
         UUID userId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
-        Instant issuedAt = Instant.parse("2026-03-26T10:15:30Z");
+        Instant issuedAt = Instant.now().plusSeconds(300);
         User user = new User();
         user.setId(userId);
         user.setRole(UserRole.USER);
@@ -65,7 +65,7 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(jwtUtil(), tokenBlacklistService, sessionBlacklistService, userRepository);
         UUID userId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
-        Instant issuedAt = Instant.parse("2026-03-26T10:15:30Z");
+        Instant issuedAt = Instant.now().plusSeconds(300);
         User user = new User();
         user.setId(userId);
         user.setRole(UserRole.USER);
@@ -88,7 +88,7 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(jwtUtil(), tokenBlacklistService, sessionBlacklistService, userRepository);
         UUID userId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
-        Instant issuedAt = Instant.parse("2026-03-26T10:15:30Z");
+        Instant issuedAt = Instant.now().plusSeconds(300);
         User user = new User();
         user.setId(userId);
         user.setRole(UserRole.USER);
@@ -111,7 +111,7 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(jwtUtil(), tokenBlacklistService, sessionBlacklistService, userRepository);
         UUID userId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
-        Instant issuedAt = Instant.parse("2026-03-26T10:15:30Z");
+        Instant issuedAt = Instant.now().plusSeconds(300);
         User user = new User();
         user.setId(userId);
         user.setRole(UserRole.USER);
