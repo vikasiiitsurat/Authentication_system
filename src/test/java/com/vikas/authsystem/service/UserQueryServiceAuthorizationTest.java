@@ -74,6 +74,7 @@ class UserQueryServiceAuthorizationTest {
         UserProfileResponse response = userQueryService.getUserProfile(user.getId());
 
         assertEquals(user.getId(), response.id());
+        assertEquals(user.getFullName(), response.fullName());
         assertEquals(user.getEmail(), response.email());
     }
 
@@ -141,6 +142,7 @@ class UserQueryServiceAuthorizationTest {
         User user = new User();
         user.setId(id);
         user.setEmail(email);
+        user.setFullName("Test User");
         user.setRole(role);
         user.setCreatedAt(Instant.parse("2026-03-18T10:15:30Z"));
         user.setUpdatedAt(Instant.parse("2026-03-18T10:15:30Z"));

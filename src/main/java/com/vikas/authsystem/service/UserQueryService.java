@@ -39,6 +39,7 @@ public class UserQueryService {
     private UserProfileResponse toUserProfile(User user) {
         return new UserProfileResponse(
                 user.getId(),
+                user.getFullName(),
                 user.getEmail(),
                 user.getRole(),
                 user.getCreatedAt(),

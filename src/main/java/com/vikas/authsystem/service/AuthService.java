@@ -104,6 +104,7 @@ public class AuthService {
         String outcome = "error";
         try {
             String normalizedEmail = normalizeEmail(request.email());
+            String normalizedFullName = normalizeFullName(request.fullName());
             User existingUser = userRepository.findByEmail(normalizedEmail).orElse(null);
             if (existingUser != null && existingUser.isEmailVerified()) {
                 outcome = "already_registered";
@@ -111,6 +112,7 @@ public class AuthService {
                 throw new ResourceConflictException("Email is already registered");
             }
             if (existingUser != null) {
+                existingUser.setFullName(normalizedFullName);
                 existingUser.setPasswordHash(passwordEncoder.encode(request.password()));
                 existingUser.setPasswordChangedAt(Instant.now(clock));
                 clearFailedLoginState(existingUser);
@@ -121,6 +123,7 @@ public class AuthService {
                 outcome = "pending_verification";
                 return new RegisterResponse(
                         existingUser.getId(),
+                        existingUser.getFullName(),
                         existingUser.getEmail(),
                         "Registration is pending email verification. An OTP has been sent.",
                         existingUser.getCreatedAt(),
@@ -132,6 +135,7 @@ public class AuthService {
 
             User user = new User();
             user.setEmail(normalizedEmail);
+            user.setFullName(normalizedFullName);
             user.setPasswordHash(passwordEncoder.encode(request.password()));
             user.setPasswordChangedAt(Instant.now(clock));
             user.setRole(UserRole.USER);
@@ -148,6 +152,7 @@ public class AuthService {
             outcome = "success";
             return new RegisterResponse(
                     savedUser.getId(),
+                    savedUser.getFullName(),
                     savedUser.getEmail(),
                     "Registration successful. Verify the OTP within 3 minutes to activate the account.",
                     savedUser.getCreatedAt(),
@@ -567,6 +572,10 @@ public class AuthService {
 
     private String normalizeEmail(String email) {
         return email.trim().toLowerCase();
+    }
+
+    private String normalizeFullName(String fullName) {
+        return fullName.trim().replaceAll("\\s+", " ");
     }
 
     private EmailVerificationStatusResponse genericResendResponse(String email) {

@@ -10,6 +10,8 @@ import java.util.UUID;
 public record UserProfileResponse(
         @Schema(description = "Unique user identifier", example = "6a6c97fb-2a07-455c-8b2f-b6d21e70f98e")
         UUID id,
+        @Schema(description = "Full name stored for the user", example = "Vikas Sharma")
+        String fullName,
         @Schema(description = "User email address", example = "user@example.com")
         String email,
         @Schema(description = "Application role granted to the user", example = "USER")

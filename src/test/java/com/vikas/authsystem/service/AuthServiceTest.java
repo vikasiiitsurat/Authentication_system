@@ -443,7 +443,7 @@ class AuthServiceTest {
 
     @Test
     void registerCreatesUnverifiedUserAndDispatchesOtp() {
-        RegisterRequest request = new RegisterRequest("new@example.com", "super-secret");
+        RegisterRequest request = new RegisterRequest("New User", "new@example.com", "super-secret");
         EmailVerificationOtpService.OtpIssueResult otpIssueResult =
                 new EmailVerificationOtpService.OtpIssueResult("482913", 180, 30);
         when(userRepository.findByEmail("new@example.com")).thenReturn(Optional.empty());
@@ -453,6 +453,7 @@ class AuthServiceTest {
         RegisterResponse response = authService.register(request, "127.0.0.1");
 
         assertTrue(response.emailVerificationRequired());
+        assertEquals("New User", response.fullName());
         assertEquals(180, response.otpExpiresInSeconds());
         assertEquals(30, response.resendAvailableInSeconds());
         verify(otpDeliveryService).sendVerificationOtp("new@example.com", "482913", 180);
@@ -464,7 +465,7 @@ class AuthServiceTest {
         User existingUser = baseUser();
         existingUser.setEmailVerified(false);
         existingUser.setPasswordHash("old-hash");
-        RegisterRequest request = new RegisterRequest(existingUser.getEmail(), "new-secret-123");
+        RegisterRequest request = new RegisterRequest("Updated Name", existingUser.getEmail(), "new-secret-123");
         EmailVerificationOtpService.OtpIssueResult otpIssueResult =
                 new EmailVerificationOtpService.OtpIssueResult("222333", 180, 30);
         when(userRepository.findByEmail(existingUser.getEmail())).thenReturn(Optional.of(existingUser));
@@ -474,6 +475,8 @@ class AuthServiceTest {
         RegisterResponse response = authService.register(request, "127.0.0.1");
 
         assertEquals(existingUser.getId(), response.userId());
+        assertEquals("Updated Name", response.fullName());
+        assertEquals("Updated Name", existingUser.getFullName());
         assertEquals("new-hash", existingUser.getPasswordHash());
         verify(userRepository).save(existingUser);
         verify(otpDeliveryService).sendVerificationOtp(existingUser.getEmail(), "222333", 180);
@@ -482,7 +485,7 @@ class AuthServiceTest {
 
     @Test
     void registerCreatesFreshAccountWhenPreviousAccountWasDeleted() {
-        RegisterRequest request = new RegisterRequest("user@example.com", "super-secret");
+        RegisterRequest request = new RegisterRequest("Fresh User", "user@example.com", "super-secret");
         EmailVerificationOtpService.OtpIssueResult otpIssueResult =
                 new EmailVerificationOtpService.OtpIssueResult("482913", 180, 30);
         when(userRepository.findByEmail("user@example.com")).thenReturn(Optional.empty());
@@ -492,6 +495,7 @@ class AuthServiceTest {
         RegisterResponse response = authService.register(request, "127.0.0.1");
 
         assertEquals("user@example.com", response.email());
+        assertEquals("Fresh User", response.fullName());
         assertTrue(response.emailVerificationRequired());
         verify(otpDeliveryService).sendVerificationOtp("user@example.com", "482913", 180);
         verify(authMetricsService).recordOperation("register", "success", null);
@@ -595,6 +599,7 @@ class AuthServiceTest {
         User user = new User();
         user.setId(UUID.randomUUID());
         user.setEmail("user@example.com");
+        user.setFullName("Existing User");
         user.setPasswordHash("encoded-password");
         user.setRole(UserRole.USER);
         user.setEmailVerified(true);

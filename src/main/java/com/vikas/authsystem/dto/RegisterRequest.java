@@ -7,6 +7,11 @@ import jakarta.validation.constraints.Size;
 
 @Schema(name = "RegisterRequest", description = "Payload used to register a new account.")
 public record RegisterRequest(
+        @NotBlank(message = "Full name is required")
+        @Size(max = 255, message = "Full name must be at most 255 characters")
+        @Schema(description = "Full name of the user registering the account", example = "Vikas Sharma")
+        String fullName,
+
         @NotBlank(message = "Email is required")
         @Email(message = "Email format is invalid")
         @Schema(description = "Unique email address for the new account", example = "new.user@example.com")

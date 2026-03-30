@@ -11,12 +11,12 @@ Production-oriented authentication and user management API built with Spring Boo
 - Global logout that invalidates access tokens and refresh-token sessions across devices
 - Authenticated soft-delete account lifecycle with password and email confirmation
 - Session listing and revocation
-- Redis-backed login protection for distributed deployments
-- Layered rate limiting for login and OTP flows
-- Anti-enumeration login and reset responses
+- Uses Redis to handle login attempts and security checks across multiple servers.
+- Limits how many times someone can try login or OTP requests (prevents brute-force attacks)
+- System does not reveal whether an email exists or not (for security).
 - Access-token invalidation after password change/reset
 - Audit logging for security-sensitive events
-- Micrometer metrics and Prometheus alert rules
+- Tracks system performance and security events using monitoring tools and alerts.
 
 ## Tech Stack
 
@@ -47,11 +47,11 @@ Production-oriented authentication and user management API built with Spring Boo
 
 - per-IP login throttling
 - per-account+IP login throttling
-- short-lived per-account protection state
-- suspicious IP burst detection
-- account unlock OTPs and unlock recovery state clearing
+- Temporary security flags stored for accounts
+- Detect sudden high activity from an IP
+- Handle OTP when unlocking account
 - OTP issuance and OTP verification limits
-- OTP codes, OTP attempts, resend cooldowns
+- storesb OTP codes, OTP attempts, resend cooldowns
 - token/session blacklist support
 
 This split keeps durable account state in PostgreSQL and short-lived abuse-control state in Redis.

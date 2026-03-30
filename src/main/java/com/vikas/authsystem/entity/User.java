@@ -27,6 +27,9 @@ public class User {
     @Column(nullable = false, unique = true, length = 320)
     private String email;
 
+    @Column(name = "full_name", nullable = false, length = 255)
+    private String fullName;
+
     @Column(name = "password_hash", nullable = false, length = 255)
     private String passwordHash;
 
@@ -72,15 +75,21 @@ public class User {
     @PrePersist
     public void prePersist() {
         email = normalizeEmail(email);
+        fullName = normalizeFullName(fullName);
     }
 
     @PreUpdate
     public void preUpdate() {
         email = normalizeEmail(email);
+        fullName = normalizeFullName(fullName);
     }
 
     private String normalizeEmail(String value) {
         return value == null ? null : value.trim().toLowerCase();
+    }
+
+    private String normalizeFullName(String value) {
+        return value == null ? null : value.trim().replaceAll("\\s+", " ");
     }
 
     public UUID getId() {
@@ -97,6 +106,14 @@ public class User {
 
     public void setEmail(String email) {
         this.email = email;
+    }
+
+    public String getFullName() {
+        return fullName;
+    }
+
+    public void setFullName(String fullName) {
+        this.fullName = fullName;
     }
 
     public String getPasswordHash() {
