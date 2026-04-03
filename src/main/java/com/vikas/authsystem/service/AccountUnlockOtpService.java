@@ -35,16 +35,27 @@ public class AccountUnlockOtpService {
     private static final String OTP_VERSION = "1";
 
     private final StringRedisTemplate redisTemplate;
+    private final AtomicRedisCounterService atomicRedisCounterService;
     private final Clock clock;
     private final SecretKeySpec otpSecretKey;
 
     @Autowired
-    public AccountUnlockOtpService(StringRedisTemplate redisTemplate, OtpProperties otpProperties) {
-        this(redisTemplate, otpProperties, Clock.systemUTC());
+    public AccountUnlockOtpService(
+            StringRedisTemplate redisTemplate,
+            OtpProperties otpProperties,
+            AtomicRedisCounterService atomicRedisCounterService
+    ) {
+        this(redisTemplate, otpProperties, atomicRedisCounterService, Clock.systemUTC());
     }
 
-    AccountUnlockOtpService(StringRedisTemplate redisTemplate, OtpProperties otpProperties, Clock clock) {
+    AccountUnlockOtpService(
+            StringRedisTemplate redisTemplate,
+            OtpProperties otpProperties,
+            AtomicRedisCounterService atomicRedisCounterService,
+            Clock clock
+    ) {
         this.redisTemplate = redisTemplate;
+        this.atomicRedisCounterService = atomicRedisCounterService;
         this.clock = clock;
         this.otpSecretKey = buildOtpSecretKey(otpProperties);
     }
@@ -154,14 +165,7 @@ public class AccountUnlockOtpService {
     }
 
     private long incrementCounter(String key, Duration ttl) {
-        Long count = redisTemplate.opsForValue().increment(key);
-        if (count == null) {
-            throw new IllegalStateException("Failed to evaluate account unlock OTP limits");
-        }
-        if (count == 1L) {
-            redisTemplate.expire(key, ttl);
-        }
-        return count;
+        return atomicRedisCounterService.increment(key, ttl, "Failed to evaluate account unlock OTP limits");
     }
 
     private long remainingSeconds(String key) {

@@ -34,6 +34,7 @@ public class AccountManagementService {
     private final SessionBlacklistService sessionBlacklistService;
     private final AuditService auditService;
     private final AuthMetricsService authMetricsService;
+    private final UserSecurityStateService userSecurityStateService;
     private final Clock clock;
 
     public AccountManagementService(
@@ -45,6 +46,7 @@ public class AccountManagementService {
             SessionBlacklistService sessionBlacklistService,
             AuditService auditService,
             AuthMetricsService authMetricsService,
+            UserSecurityStateService userSecurityStateService,
             Clock clock
     ) {
         this.userRepository = userRepository;
@@ -55,6 +57,7 @@ public class AccountManagementService {
         this.sessionBlacklistService = sessionBlacklistService;
         this.auditService = auditService;
         this.authMetricsService = authMetricsService;
+        this.userSecurityStateService = userSecurityStateService;
         this.clock = clock;
     }
 
@@ -120,6 +123,7 @@ public class AccountManagementService {
         user.setPasswordChangedAt(now);
         user.setSessionInvalidatedAt(now);
         userRepository.save(user);
+        userSecurityStateService.evict(user.getId());
     }
 
     private void schedulePostCommitCleanup(

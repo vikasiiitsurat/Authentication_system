@@ -22,6 +22,7 @@ import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
 import com.vikas.authsystem.dto.VerifyLoginTwoFactorRequest;
 import com.vikas.authsystem.security.AuthenticatedUser;
 import com.vikas.authsystem.service.AuthService;
+import com.vikas.authsystem.service.ClientIpResolver;
 import com.vikas.authsystem.service.RateLimiterService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -49,10 +50,12 @@ public class AuthController {
 
     private final AuthService authService;
     private final RateLimiterService rateLimiterService;
+    private final ClientIpResolver clientIpResolver;
 
-    public AuthController(AuthService authService, RateLimiterService rateLimiterService) {
+    public AuthController(AuthService authService, RateLimiterService rateLimiterService, ClientIpResolver clientIpResolver) {
         this.authService = authService;
         this.rateLimiterService = rateLimiterService;
+        this.clientIpResolver = clientIpResolver;
     }
 
     @PostMapping("/register")
@@ -73,7 +76,7 @@ public class AuthController {
     })
     public ResponseEntity<RegisterResponse> register(@Valid @RequestBody RegisterRequest request, HttpServletRequest servletRequest) {
         // Controllers stay thin: extract transport-level details and delegate all business rules.
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         rateLimiterService.validateOtpGenerationRateLimit(request.email(), clientIp);
         RegisterResponse response = authService.register(request, clientIp);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
@@ -96,7 +99,7 @@ public class AuthController {
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
     })
     public ResponseEntity<AuthenticationResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest servletRequest) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         AuthenticationResponse response = authService.login(request, clientIp);
         return ResponseEntity.ok(response);
     }
@@ -119,7 +122,7 @@ public class AuthController {
             @Valid @RequestBody VerifyLoginTwoFactorRequest request,
             HttpServletRequest servletRequest
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         AuthenticationResponse response = authService.verifyLoginTwoFactor(request, clientIp);
         return ResponseEntity.ok(response);
     }
@@ -142,7 +145,7 @@ public class AuthController {
             @Valid @RequestBody ResendLoginTwoFactorRequest request,
             HttpServletRequest servletRequest
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         AuthenticationResponse response = authService.resendLoginTwoFactor(request, clientIp);
         return ResponseEntity.ok(response);
     }
@@ -162,7 +165,7 @@ public class AuthController {
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
     })
     public ResponseEntity<LoginResponse> refresh(@Valid @RequestBody RefreshTokenRequest request, HttpServletRequest servletRequest) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         LoginResponse response = authService.refresh(request, clientIp);
         return ResponseEntity.ok(response);
     }
@@ -185,7 +188,7 @@ public class AuthController {
             @Valid @RequestBody VerifyEmailOtpRequest request,
             HttpServletRequest servletRequest
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         rateLimiterService.validateOtpVerificationRateLimit(request.email(), clientIp);
         EmailVerificationStatusResponse response = authService.verifyEmailOtp(request, clientIp);
         return ResponseEntity.ok(response);
@@ -209,7 +212,7 @@ public class AuthController {
             @Valid @RequestBody ResendVerificationOtpRequest request,
             HttpServletRequest servletRequest
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         rateLimiterService.validateOtpGenerationRateLimit(request.email(), clientIp);
         EmailVerificationStatusResponse response = authService.resendVerificationOtp(request, clientIp);
         return ResponseEntity.ok(response);
@@ -233,7 +236,7 @@ public class AuthController {
             @Valid @RequestBody ForgotPasswordRequest request,
             HttpServletRequest servletRequest
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         rateLimiterService.validatePasswordResetRequestRateLimit(request.email(), clientIp);
         PasswordResetRequestResponse response = authService.requestPasswordReset(request, clientIp);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
@@ -256,7 +259,7 @@ public class AuthController {
             @Valid @RequestBody ResetPasswordRequest request,
             HttpServletRequest servletRequest
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         rateLimiterService.validatePasswordResetConfirmationRateLimit(request.email(), clientIp);
         authService.resetPassword(request, clientIp);
         return ResponseEntity.noContent().build();
@@ -280,7 +283,7 @@ public class AuthController {
             @Valid @RequestBody AccountUnlockRequest request,
             HttpServletRequest servletRequest
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         rateLimiterService.validateAccountUnlockRequestRateLimit(request.email(), clientIp);
         AccountUnlockRequestResponse response = authService.requestAccountUnlock(request, clientIp);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
@@ -303,7 +306,7 @@ public class AuthController {
             @Valid @RequestBody VerifyAccountUnlockRequest request,
             HttpServletRequest servletRequest
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         rateLimiterService.validateAccountUnlockConfirmationRateLimit(request.email(), clientIp);
         authService.unlockAccount(request, clientIp);
         return ResponseEntity.noContent().build();
@@ -328,7 +331,7 @@ public class AuthController {
             HttpServletRequest servletRequest,
             @AuthenticationPrincipal AuthenticatedUser authenticatedUser
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         // The request body is optional legacy input; the bearer token identifies the session to revoke.
         authService.logout(authenticatedUser, clientIp);
         return ResponseEntity.noContent().build();
@@ -351,7 +354,7 @@ public class AuthController {
             HttpServletRequest servletRequest,
             @AuthenticationPrincipal AuthenticatedUser authenticatedUser
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         GlobalLogoutResponse response = authService.logoutAll(authenticatedUser, clientIp);
         return ResponseEntity.ok(response);
     }
@@ -375,17 +378,9 @@ public class AuthController {
             HttpServletRequest servletRequest,
             @AuthenticationPrincipal AuthenticatedUser authenticatedUser
     ) {
-        String clientIp = extractClientIp(servletRequest);
+        String clientIp = clientIpResolver.resolve(servletRequest);
         authService.changePassword(authenticatedUser, request, clientIp);
         return ResponseEntity.noContent().build();
     }
 
-    private String extractClientIp(HttpServletRequest request) {
-        // Prefer the first forwarded address when the app sits behind a trusted proxy/load balancer.
-        String xForwardedFor = request.getHeader("X-Forwarded-For");
-        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
-            return xForwardedFor.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
-    }
 }

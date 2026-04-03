@@ -47,7 +47,7 @@ public class AuditService {
 
         transactionTemplate.executeWithoutResult(status -> {
             try {
-                auditLogRepository.saveAndFlush(auditLog);
+                auditLogRepository.save(auditLog);
                 authMetricsService.recordAuditPersistence(action, "persisted", sample);
                 // Structured fields keep audit events easy to filter in centralized logging systems.
                 log.info(

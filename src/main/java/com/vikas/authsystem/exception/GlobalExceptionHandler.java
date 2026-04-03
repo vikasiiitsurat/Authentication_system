@@ -61,20 +61,6 @@ public class GlobalExceptionHandler {
         return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage(), null);
     }
 
-    @ExceptionHandler(AccountLockedException.class)
-    public ResponseEntity<ApiErrorResponse> handleLocked(AccountLockedException ex) {
-        ApiErrorResponse body = new ApiErrorResponse(
-                HttpStatus.LOCKED.value(),
-                HttpStatus.LOCKED.getReasonPhrase(),
-                ex.getMessage(),
-                Instant.now(),
-                null
-        );
-        return ResponseEntity.status(HttpStatus.LOCKED)
-                .header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.getRetryAfterSeconds()))
-                .body(body);
-    }
-
     @ExceptionHandler(TooManyRequestsException.class)
     public ResponseEntity<ApiErrorResponse> handleTooManyRequests(TooManyRequestsException ex) {
         ApiErrorResponse body = new ApiErrorResponse(

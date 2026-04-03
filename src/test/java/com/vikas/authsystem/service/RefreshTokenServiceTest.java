@@ -67,7 +67,7 @@ class RefreshTokenServiceTest {
         refreshToken.setDeviceId("device-1");
         refreshToken.setExpiryDate(FIXED_NOW.plusSeconds(3600));
 
-        when(refreshTokenRepository.findByTokenHash(refreshToken.getTokenHash())).thenReturn(Optional.of(refreshToken));
+        when(refreshTokenRepository.findByTokenHashForUpdate(refreshToken.getTokenHash())).thenReturn(Optional.of(refreshToken));
         when(refreshTokenRepository.findAllByUser_IdAndRevokedAtIsNull(deletedUser.getId())).thenReturn(List.of(refreshToken));
 
         UnauthorizedException exception = assertThrows(

@@ -14,22 +14,6 @@ class GlobalExceptionHandlerTest {
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
 
     @Test
-    void lockedResponsesIncludeRetryAfterHeader() {
-        AccountLockedException exception = new AccountLockedException(
-                "Account is locked. Try again in 3 minutes.",
-                180
-        );
-
-        ResponseEntity<ApiErrorResponse> response = handler.handleLocked(exception);
-
-        assertEquals(HttpStatus.LOCKED, response.getStatusCode());
-        assertEquals("180", response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER));
-        assertNotNull(response.getBody());
-        assertEquals("Account is locked. Try again in 3 minutes.", response.getBody().message());
-        assertEquals(HttpStatus.LOCKED.value(), response.getBody().status());
-    }
-
-    @Test
     void tooManyRequestsResponsesIncludeRetryAfterHeaderWhenPresent() {
         TooManyRequestsException exception = new TooManyRequestsException(
                 "OTP can be resent in 30 seconds.",

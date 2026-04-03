@@ -44,6 +44,7 @@ class AccountManagementServiceTest {
     private final SessionBlacklistService sessionBlacklistService = mock(SessionBlacklistService.class);
     private final AuditService auditService = mock(AuditService.class);
     private final AuthMetricsService authMetricsService = mock(AuthMetricsService.class);
+    private final UserSecurityStateService userSecurityStateService = mock(UserSecurityStateService.class);
 
     private AccountManagementService accountManagementService;
 
@@ -58,6 +59,7 @@ class AccountManagementServiceTest {
                 sessionBlacklistService,
                 auditService,
                 authMetricsService,
+                userSecurityStateService,
                 Clock.fixed(FIXED_NOW, ZoneOffset.UTC)
         );
     }

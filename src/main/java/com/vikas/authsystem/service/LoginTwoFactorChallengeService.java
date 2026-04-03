@@ -39,17 +39,28 @@ public class LoginTwoFactorChallengeService {
     private static final String RESEND_COUNTER_KEY_PREFIX = "auth:login-2fa:resend-count:";
 
     private final StringRedisTemplate redisTemplate;
+    private final AtomicRedisCounterService atomicRedisCounterService;
     private final Clock clock;
     private final SecretKeySpec otpSecretKey;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Autowired
-    public LoginTwoFactorChallengeService(StringRedisTemplate redisTemplate, OtpProperties otpProperties) {
-        this(redisTemplate, otpProperties, Clock.systemUTC());
+    public LoginTwoFactorChallengeService(
+            StringRedisTemplate redisTemplate,
+            OtpProperties otpProperties,
+            AtomicRedisCounterService atomicRedisCounterService
+    ) {
+        this(redisTemplate, otpProperties, atomicRedisCounterService, Clock.systemUTC());
     }
 
-    LoginTwoFactorChallengeService(StringRedisTemplate redisTemplate, OtpProperties otpProperties, Clock clock) {
+    LoginTwoFactorChallengeService(
+            StringRedisTemplate redisTemplate,
+            OtpProperties otpProperties,
+            AtomicRedisCounterService atomicRedisCounterService,
+            Clock clock
+    ) {
         this.redisTemplate = redisTemplate;
+        this.atomicRedisCounterService = atomicRedisCounterService;
         this.clock = clock;
         this.otpSecretKey = buildOtpSecretKey(otpProperties);
     }
@@ -242,14 +253,7 @@ public class LoginTwoFactorChallengeService {
     }
 
     private long incrementCounter(String key, Duration ttl) {
-        Long count = redisTemplate.opsForValue().increment(key);
-        if (count == null) {
-            throw new IllegalStateException("Failed to evaluate login 2FA limits");
-        }
-        if (count == 1L) {
-            redisTemplate.expire(key, ttl);
-        }
-        return count;
+        return atomicRedisCounterService.increment(key, ttl, "Failed to evaluate login 2FA limits");
     }
 
     private long remainingSeconds(String key) {

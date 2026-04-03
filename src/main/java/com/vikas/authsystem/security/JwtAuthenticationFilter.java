@@ -1,7 +1,7 @@
 package com.vikas.authsystem.security;
 
 import com.vikas.authsystem.entity.UserRole;
-import com.vikas.authsystem.repository.UserRepository;
+import com.vikas.authsystem.service.UserSecurityStateService;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.JwtException;
@@ -31,18 +31,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtUtil jwtUtil;
     private final TokenBlacklistService tokenBlacklistService;
     private final SessionBlacklistService sessionBlacklistService;
-    private final UserRepository userRepository;
+    private final UserSecurityStateService userSecurityStateService;
 
     public JwtAuthenticationFilter(
             JwtUtil jwtUtil,
             TokenBlacklistService tokenBlacklistService,
             SessionBlacklistService sessionBlacklistService,
-            UserRepository userRepository
+            UserSecurityStateService userSecurityStateService
     ) {
         this.jwtUtil = jwtUtil;
         this.tokenBlacklistService = tokenBlacklistService;
         this.sessionBlacklistService = sessionBlacklistService;
-        this.userRepository = userRepository;
+        this.userSecurityStateService = userSecurityStateService;
     }
 
     @Override
@@ -58,6 +58,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         try {
             Jws<Claims> parsed = jwtUtil.parseToken(token);
             Claims claims = parsed.getPayload();
+            requireAccessToken(claims);
             String jti = claims.getId();
             if (jti != null && tokenBlacklistService.isBlacklisted(jti)) {
                 filterChain.doFilter(request, response);
@@ -95,16 +96,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private boolean isSecurityStateNewerThanToken(UUID userId, Instant tokenIssuedAt) {
-        return userRepository.findById(userId)
-                .map(user -> {
-                    if (user.getDeletedAt() != null) {
-                        return true;
-                    }
-                    Instant passwordChangedAt = user.getPasswordChangedAt();
-                    Instant sessionInvalidatedAt = user.getSessionInvalidatedAt();
-                    return isTokenStale(tokenIssuedAt, passwordChangedAt) || isTokenStale(tokenIssuedAt, sessionInvalidatedAt);
-                })
-                .orElse(true);
+        UserSecurityStateService.UserSecurityState securityState = userSecurityStateService.getSecurityState(userId);
+        if (securityState.deleted()) {
+            return true;
+        }
+        return isTokenStale(tokenIssuedAt, toInstant(securityState.passwordChangedAtEpochSecond()))
+                || isTokenStale(tokenIssuedAt, toInstant(securityState.sessionInvalidatedAtEpochSecond()));
     }
 
     private boolean isTokenStale(Instant tokenIssuedAt, Instant invalidationMarker) {
@@ -150,5 +147,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         } catch (IllegalArgumentException ex) {
             throw new JwtException("JWT contains an invalid role claim", ex);
         }
+    }
+
+    private void requireAccessToken(Claims claims) {
+        String tokenType = claims.get("token_type", String.class);
+        if (!"access".equals(tokenType)) {
+            throw new JwtException("JWT is not an access token");
+        }
+    }
+
+    private Instant toInstant(Long epochSecond) {
+        return epochSecond == null ? null : Instant.ofEpochSecond(epochSecond);
     }
 }

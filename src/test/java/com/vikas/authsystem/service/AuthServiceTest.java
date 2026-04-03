@@ -66,9 +66,11 @@ class AuthServiceTest {
     private final AccountUnlockOtpService accountUnlockOtpService = mock(AccountUnlockOtpService.class);
     private final LoginTwoFactorChallengeService loginTwoFactorChallengeService = mock(LoginTwoFactorChallengeService.class);
     private final OtpDeliveryService otpDeliveryService = mock(OtpDeliveryService.class);
+    private final AfterCommitExecutor afterCommitExecutor = new AfterCommitExecutor();
     private final RateLimiterService rateLimiterService = mock(RateLimiterService.class);
     private final AuditService auditService = mock(AuditService.class);
     private final AuthMetricsService authMetricsService = mock(AuthMetricsService.class);
+    private final UserSecurityStateService userSecurityStateService = mock(UserSecurityStateService.class);
 
     private AuthService authService;
 
@@ -90,9 +92,11 @@ class AuthServiceTest {
                 accountUnlockOtpService,
                 loginTwoFactorChallengeService,
                 otpDeliveryService,
+                afterCommitExecutor,
                 rateLimiterService,
                 auditService,
                 authMetricsService,
+                userSecurityStateService,
                 clock
         );
         when(loginProtectionService.evaluateAttempt(anyString(), anyString()))
@@ -408,11 +412,11 @@ class AuthServiceTest {
         );
         when(userRepository.findByIdForUpdate(user.getId())).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("current-password", user.getPasswordHash())).thenReturn(true);
-        when(passwordEncoder.encode("new-password-123")).thenReturn("new-password-hash");
+        when(passwordEncoder.encode("NewPassword123")).thenReturn("new-password-hash");
 
         authService.changePassword(
                 authenticatedUser,
-                new PasswordChangeRequest("current-password", "new-password-123", "device-1"),
+                new PasswordChangeRequest("current-password", "NewPassword123", "device-1"),
                 "127.0.0.1"
         );
 
@@ -531,11 +535,11 @@ class AuthServiceTest {
         when(userRepository.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
         when(passwordResetOtpService.verifyOtp(user.getId(), "123456"))
                 .thenReturn(new PasswordResetOtpService.OtpVerificationResult(true, 540));
-        when(passwordEncoder.matches("new-password-123", user.getPasswordHash())).thenReturn(false);
-        when(passwordEncoder.encode("new-password-123")).thenReturn("new-password-hash");
+        when(passwordEncoder.matches("NewPassword123", user.getPasswordHash())).thenReturn(false);
+        when(passwordEncoder.encode("NewPassword123")).thenReturn("new-password-hash");
 
         authService.resetPassword(
-                new ResetPasswordRequest(user.getEmail(), "123456", "new-password-123", "device-1"),
+                new ResetPasswordRequest(user.getEmail(), "123456", "NewPassword123", "device-1"),
                 "127.0.0.1"
         );
 
@@ -568,11 +572,11 @@ class AuthServiceTest {
 
     @Test
     void registerCreatesUnverifiedUserAndDispatchesOtp() {
-        RegisterRequest request = new RegisterRequest("New User", "new@example.com", "super-secret");
+        RegisterRequest request = new RegisterRequest("New User", "new@example.com", "SuperSecret123");
         EmailVerificationOtpService.OtpIssueResult otpIssueResult =
                 new EmailVerificationOtpService.OtpIssueResult("482913", 180, 30);
         when(userRepository.findByEmail("new@example.com")).thenReturn(Optional.empty());
-        when(passwordEncoder.encode("super-secret")).thenReturn("encoded-password");
+        when(passwordEncoder.encode("SuperSecret123")).thenReturn("encoded-password");
         when(emailVerificationOtpService.issueOtp(any(UUID.class))).thenReturn(otpIssueResult);
 
         RegisterResponse response = authService.register(request, "127.0.0.1");
@@ -590,11 +594,11 @@ class AuthServiceTest {
         User existingUser = baseUser();
         existingUser.setEmailVerified(false);
         existingUser.setPasswordHash("old-hash");
-        RegisterRequest request = new RegisterRequest("Updated Name", existingUser.getEmail(), "new-secret-123");
+        RegisterRequest request = new RegisterRequest("Updated Name", existingUser.getEmail(), "NewSecret123");
         EmailVerificationOtpService.OtpIssueResult otpIssueResult =
                 new EmailVerificationOtpService.OtpIssueResult("222333", 180, 30);
         when(userRepository.findByEmail(existingUser.getEmail())).thenReturn(Optional.of(existingUser));
-        when(passwordEncoder.encode("new-secret-123")).thenReturn("new-hash");
+        when(passwordEncoder.encode("NewSecret123")).thenReturn("new-hash");
         when(emailVerificationOtpService.reissueOtp(existingUser.getId())).thenReturn(otpIssueResult);
 
         RegisterResponse response = authService.register(request, "127.0.0.1");
@@ -610,11 +614,11 @@ class AuthServiceTest {
 
     @Test
     void registerCreatesFreshAccountWhenPreviousAccountWasDeleted() {
-        RegisterRequest request = new RegisterRequest("Fresh User", "user@example.com", "super-secret");
+        RegisterRequest request = new RegisterRequest("Fresh User", "user@example.com", "SuperSecret123");
         EmailVerificationOtpService.OtpIssueResult otpIssueResult =
                 new EmailVerificationOtpService.OtpIssueResult("482913", 180, 30);
         when(userRepository.findByEmail("user@example.com")).thenReturn(Optional.empty());
-        when(passwordEncoder.encode("super-secret")).thenReturn("encoded-password");
+        when(passwordEncoder.encode("SuperSecret123")).thenReturn("encoded-password");
         when(emailVerificationOtpService.issueOtp(any(UUID.class))).thenReturn(otpIssueResult);
 
         RegisterResponse response = authService.register(request, "127.0.0.1");

@@ -45,15 +45,6 @@ public class User {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    @Column(name = "failed_attempts", nullable = false)
-    private int failedAttempts;
-
-    @Column(name = "lock_until")
-    private Instant lockUntil;
-
-    @Column(name = "last_failed_attempt")
-    private Instant lastFailedAttempt;
-
     @Column(name = "email_verified", nullable = false)
     private boolean emailVerified;
 
@@ -152,30 +143,6 @@ public class User {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
-    }
-
-    public int getFailedAttempts() {
-        return failedAttempts;
-    }
-
-    public void setFailedAttempts(int failedAttempts) {
-        this.failedAttempts = failedAttempts;
-    }
-
-    public Instant getLockUntil() {
-        return lockUntil;
-    }
-
-    public void setLockUntil(Instant lockUntil) {
-        this.lockUntil = lockUntil;
-    }
-
-    public Instant getLastFailedAttempt() {
-        return lastFailedAttempt;
-    }
-
-    public void setLastFailedAttempt(Instant lastFailedAttempt) {
-        this.lastFailedAttempt = lastFailedAttempt;
     }
 
     public boolean isEmailVerified() {

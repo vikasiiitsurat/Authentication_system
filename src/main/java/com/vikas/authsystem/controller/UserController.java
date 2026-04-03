@@ -6,6 +6,7 @@ import com.vikas.authsystem.dto.TwoFactorUpdateRequest;
 import com.vikas.authsystem.dto.UserProfileResponse;
 import com.vikas.authsystem.security.AuthenticatedUser;
 import com.vikas.authsystem.service.AccountManagementService;
+import com.vikas.authsystem.service.ClientIpResolver;
 import com.vikas.authsystem.service.TwoFactorManagementService;
 import com.vikas.authsystem.service.UserQueryService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -40,15 +41,18 @@ public class UserController {
     private final UserQueryService userQueryService;
     private final AccountManagementService accountManagementService;
     private final TwoFactorManagementService twoFactorManagementService;
+    private final ClientIpResolver clientIpResolver;
 
     public UserController(
             UserQueryService userQueryService,
             AccountManagementService accountManagementService,
-            TwoFactorManagementService twoFactorManagementService
+            TwoFactorManagementService twoFactorManagementService,
+            ClientIpResolver clientIpResolver
     ) {
         this.userQueryService = userQueryService;
         this.accountManagementService = accountManagementService;
         this.twoFactorManagementService = twoFactorManagementService;
+        this.clientIpResolver = clientIpResolver;
     }
 
     @GetMapping("/users/me")
@@ -86,7 +90,7 @@ public class UserController {
         accountManagementService.deleteAuthenticatedAccount(
                 authenticatedUser,
                 request,
-                extractClientIp(servletRequest)
+                clientIpResolver.resolve(servletRequest)
         );
         return ResponseEntity.noContent().build();
     }
@@ -112,7 +116,7 @@ public class UserController {
         TwoFactorStatusResponse response = twoFactorManagementService.enable(
                 authenticatedUser,
                 request,
-                extractClientIp(servletRequest)
+                clientIpResolver.resolve(servletRequest)
         );
         return ResponseEntity.ok(response);
     }
@@ -138,7 +142,7 @@ public class UserController {
         TwoFactorStatusResponse response = twoFactorManagementService.disable(
                 authenticatedUser,
                 request,
-                extractClientIp(servletRequest)
+                clientIpResolver.resolve(servletRequest)
         );
         return ResponseEntity.ok(response);
     }
@@ -180,13 +184,5 @@ public class UserController {
     })
     public List<UserProfileResponse> listUsers() {
         return userQueryService.listUsers();
-    }
-
-    private String extractClientIp(HttpServletRequest request) {
-        String xForwardedFor = request.getHeader("X-Forwarded-For");
-        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
-            return xForwardedFor.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
     }
 }

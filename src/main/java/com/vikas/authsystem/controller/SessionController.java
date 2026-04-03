@@ -3,6 +3,7 @@ package com.vikas.authsystem.controller;
 import com.vikas.authsystem.dto.SessionBulkRevocationResponse;
 import com.vikas.authsystem.dto.SessionResponse;
 import com.vikas.authsystem.security.AuthenticatedUser;
+import com.vikas.authsystem.service.ClientIpResolver;
 import com.vikas.authsystem.service.SessionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -32,9 +33,11 @@ import java.util.UUID;
 public class SessionController {
 
     private final SessionService sessionService;
+    private final ClientIpResolver clientIpResolver;
 
-    public SessionController(SessionService sessionService) {
+    public SessionController(SessionService sessionService, ClientIpResolver clientIpResolver) {
         this.sessionService = sessionService;
+        this.clientIpResolver = clientIpResolver;
     }
 
     @GetMapping
@@ -70,7 +73,7 @@ public class SessionController {
             @AuthenticationPrincipal AuthenticatedUser authenticatedUser,
             HttpServletRequest request
     ) {
-        sessionService.revokeSession(authenticatedUser, sessionId, extractClientIp(request));
+        sessionService.revokeSession(authenticatedUser, sessionId, clientIpResolver.resolve(request));
         return ResponseEntity.noContent().build();
     }
 
@@ -91,16 +94,8 @@ public class SessionController {
     ) {
         SessionBulkRevocationResponse response = sessionService.revokeOtherSessions(
                 authenticatedUser,
-                extractClientIp(request)
+                clientIpResolver.resolve(request)
         );
         return ResponseEntity.ok(response);
-    }
-
-    private String extractClientIp(HttpServletRequest request) {
-        String xForwardedFor = request.getHeader("X-Forwarded-For");
-        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
-            return xForwardedFor.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
     }
 }

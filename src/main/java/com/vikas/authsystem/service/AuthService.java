@@ -62,9 +62,11 @@ public class AuthService {
     private final AccountUnlockOtpService accountUnlockOtpService;
     private final LoginTwoFactorChallengeService loginTwoFactorChallengeService;
     private final OtpDeliveryService otpDeliveryService;
+    private final AfterCommitExecutor afterCommitExecutor;
     private final RateLimiterService rateLimiterService;
     private final AuditService auditService;
     private final AuthMetricsService authMetricsService;
+    private final UserSecurityStateService userSecurityStateService;
     private final Clock clock;
     private final String dummyPasswordHash;
 
@@ -82,9 +84,11 @@ public class AuthService {
             AccountUnlockOtpService accountUnlockOtpService,
             LoginTwoFactorChallengeService loginTwoFactorChallengeService,
             OtpDeliveryService otpDeliveryService,
+            AfterCommitExecutor afterCommitExecutor,
             RateLimiterService rateLimiterService,
             AuditService auditService,
             AuthMetricsService authMetricsService,
+            UserSecurityStateService userSecurityStateService,
             Clock clock
     ) {
         this.userRepository = userRepository;
@@ -100,9 +104,11 @@ public class AuthService {
         this.accountUnlockOtpService = accountUnlockOtpService;
         this.loginTwoFactorChallengeService = loginTwoFactorChallengeService;
         this.otpDeliveryService = otpDeliveryService;
+        this.afterCommitExecutor = afterCommitExecutor;
         this.rateLimiterService = rateLimiterService;
         this.auditService = auditService;
         this.authMetricsService = authMetricsService;
+        this.userSecurityStateService = userSecurityStateService;
         this.clock = clock;
         this.dummyPasswordHash = passwordEncoder.encode("auth-system-dummy-password");
     }
@@ -114,6 +120,7 @@ public class AuthService {
         try {
             String normalizedEmail = normalizeEmail(request.email());
             String normalizedFullName = normalizeFullName(request.fullName());
+            validatePasswordPolicy(request.password());
             User existingUser = userRepository.findByEmail(normalizedEmail).orElse(null);
             if (existingUser != null && existingUser.isEmailVerified()) {
                 outcome = "already_registered";
@@ -124,10 +131,13 @@ public class AuthService {
                 existingUser.setFullName(normalizedFullName);
                 existingUser.setPasswordHash(passwordEncoder.encode(request.password()));
                 existingUser.setPasswordChangedAt(Instant.now(clock));
-                clearFailedLoginState(existingUser);
                 userRepository.save(existingUser);
                 EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.reissueOtp(existingUser.getId());
-                otpDeliveryService.sendVerificationOtp(existingUser.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
+                sendAfterCommit(() -> otpDeliveryService.sendVerificationOtp(
+                        existingUser.getEmail(),
+                        otpIssueResult.otp(),
+                        otpIssueResult.expiresInSeconds()
+                ));
                 auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_RESENT, existingUser.getId(), null, clientIp);
                 outcome = "pending_verification";
                 return new RegisterResponse(
@@ -150,10 +160,13 @@ public class AuthService {
             user.setRole(UserRole.USER);
             user.setEmailVerified(false);
             user.setEmailVerifiedAt(null);
-            clearFailedLoginState(user);
             User savedUser = userRepository.save(user);
             EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.issueOtp(savedUser.getId());
-            otpDeliveryService.sendVerificationOtp(savedUser.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
+            sendAfterCommit(() -> otpDeliveryService.sendVerificationOtp(
+                    savedUser.getEmail(),
+                    otpIssueResult.otp(),
+                    otpIssueResult.expiresInSeconds()
+            ));
             auditService.recordEvent(AuditAction.REGISTER_SUCCESS, savedUser.getId(), null, clientIp);
             auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_SENT, savedUser.getId(), null, clientIp);
 
@@ -233,11 +246,11 @@ public class AuthService {
                 rateLimiterService.validateLoginTwoFactorRequestRateLimit(user.getEmail(), clientIp);
                 LoginTwoFactorChallengeService.ChallengeIssueResult challengeIssueResult =
                         loginTwoFactorChallengeService.issueChallenge(user, request.deviceId(), clientIpHash);
-                otpDeliveryService.sendLoginTwoFactorOtp(
+                sendAfterCommit(() -> otpDeliveryService.sendLoginTwoFactorOtp(
                         user.getEmail(),
                         challengeIssueResult.otp(),
                         challengeIssueResult.expiresInSeconds()
-                );
+                ));
                 auditService.recordEvent(AuditAction.LOGIN_TWO_FACTOR_CHALLENGE_ISSUED, user.getId(), request.deviceId(), clientIp);
                 auditService.recordEvent(AuditAction.LOGIN_TWO_FACTOR_OTP_SENT, user.getId(), request.deviceId(), clientIp);
                 outcome = "two_factor_required";
@@ -305,11 +318,11 @@ public class AuthService {
 
             LoginTwoFactorChallengeService.ChallengeIssueResult challengeIssueResult =
                     loginTwoFactorChallengeService.resendChallenge(request.challengeToken(), loginProtectionService.hashIpAddress(clientIp));
-            otpDeliveryService.sendLoginTwoFactorOtp(
+            sendAfterCommit(() -> otpDeliveryService.sendLoginTwoFactorOtp(
                     user.getEmail(),
                     challengeIssueResult.otp(),
                     challengeIssueResult.expiresInSeconds()
-            );
+            ));
             auditService.recordEvent(AuditAction.LOGIN_TWO_FACTOR_OTP_SENT, user.getId(), challengeContext.deviceId(), clientIp);
             outcome = "success";
             return AuthenticationResponse.twoFactorRequired(
@@ -386,7 +399,11 @@ public class AuthService {
             }
 
             EmailVerificationOtpService.OtpIssueResult otpIssueResult = emailVerificationOtpService.reissueOtp(user.getId());
-            otpDeliveryService.sendVerificationOtp(user.getEmail(), otpIssueResult.otp(), otpIssueResult.expiresInSeconds());
+            sendAfterCommit(() -> otpDeliveryService.sendVerificationOtp(
+                    user.getEmail(),
+                    otpIssueResult.otp(),
+                    otpIssueResult.expiresInSeconds()
+            ));
             auditService.recordEvent(AuditAction.EMAIL_VERIFICATION_OTP_RESENT, user.getId(), null, clientIp);
             outcome = "success";
             return new EmailVerificationStatusResponse(
@@ -444,6 +461,7 @@ public class AuthService {
             Instant now = Instant.now(clock);
             user.setSessionInvalidatedAt(now);
             userRepository.save(user);
+            userSecurityStateService.evict(user.getId());
             int revokedSessions = refreshTokenService.revokeAllTokensForUser(user.getId());
             revokeAuthenticatedAccess(authenticatedUser);
             auditService.recordEvent(AuditAction.GLOBAL_LOGOUT, user.getId(), null, clientIp);
@@ -487,6 +505,7 @@ public class AuthService {
                 throw new BadRequestException("New password must be different from the current password");
             }
 
+            validatePasswordPolicy(request.newPassword());
             rotatePassword(user, request.newPassword());
             revokeAuthenticatedAccess(authenticatedUser);
             auditService.recordEvent(AuditAction.PASSWORD_CHANGE, user.getId(), request.deviceId(), clientIp);
@@ -515,7 +534,11 @@ public class AuthService {
             auditService.recordEvent(AuditAction.PASSWORD_RESET_REQUESTED, user.getId(), null, clientIp);
             PasswordResetOtpService.OtpDispatchResult otpDispatchResult = passwordResetOtpService.requestOtp(user.getId());
             if (otpDispatchResult.dispatched()) {
-                otpDeliveryService.sendPasswordResetOtp(user.getEmail(), otpDispatchResult.otp(), otpDispatchResult.expiresInSeconds());
+                sendAfterCommit(() -> otpDeliveryService.sendPasswordResetOtp(
+                        user.getEmail(),
+                        otpDispatchResult.otp(),
+                        otpDispatchResult.expiresInSeconds()
+                ));
                 auditService.recordEvent(AuditAction.PASSWORD_RESET_OTP_SENT, user.getId(), null, clientIp);
                 log.info("password_reset_otp_dispatch_succeeded userId={} email={}", user.getId(), user.getEmail());
                 outcome = "dispatched";
@@ -560,6 +583,7 @@ public class AuthService {
                 throw new BadRequestException("New password must be different from the current password");
             }
 
+            validatePasswordPolicy(request.newPassword());
             rotatePassword(user, request.newPassword());
             auditService.recordEvent(AuditAction.PASSWORD_RESET_SUCCESS, user.getId(), request.deviceId(), clientIp);
             outcome = "success";
@@ -598,7 +622,11 @@ public class AuthService {
                     loginProtectionService.hashIpAddress(clientIp)
             );
             if (otpDispatchResult.dispatched()) {
-                otpDeliveryService.sendAccountUnlockOtp(user.getEmail(), otpDispatchResult.otp(), otpDispatchResult.expiresInSeconds());
+                sendAfterCommit(() -> otpDeliveryService.sendAccountUnlockOtp(
+                        user.getEmail(),
+                        otpDispatchResult.otp(),
+                        otpDispatchResult.expiresInSeconds()
+                ));
                 auditService.recordEvent(AuditAction.ACCOUNT_UNLOCK_OTP_SENT, user.getId(), null, clientIp);
                 log.info("account_unlock_otp_dispatch_succeeded userId={} email={}", user.getId(), user.getEmail());
                 outcome = "dispatched";
@@ -645,17 +673,22 @@ public class AuthService {
         }
     }
 
-    private void resetFailedLoginState(User user) {
-        clearFailedLoginState(user);
-        userRepository.save(user);
-    }
-
     private String normalizeEmail(String email) {
         return email.trim().toLowerCase();
     }
 
     private String normalizeFullName(String fullName) {
         return fullName.trim().replaceAll("\\s+", " ");
+    }
+
+    private void validatePasswordPolicy(String password) {
+        if (password == null
+                || password.length() < 10
+                || !password.chars().anyMatch(Character::isUpperCase)
+                || !password.chars().anyMatch(Character::isLowerCase)
+                || !password.chars().anyMatch(Character::isDigit)) {
+            throw new BadRequestException("Password must be at least 10 characters and include upper-case, lower-case, and numeric characters");
+        }
     }
 
     private EmailVerificationStatusResponse genericResendResponse(String email) {
@@ -687,18 +720,13 @@ public class AuthService {
         );
     }
 
-    private void clearFailedLoginState(User user) {
-        user.setFailedAttempts(0);
-        user.setLockUntil(null);
-        user.setLastFailedAttempt(null);
-    }
-
     private void rotatePassword(User user, String rawPassword) {
         user.setPasswordHash(passwordEncoder.encode(rawPassword));
         user.setPasswordChangedAt(Instant.now(clock));
-        resetFailedLoginState(user);
+        userRepository.save(user);
         loginTwoFactorChallengeService.invalidateChallenge(user.getId());
         refreshTokenService.revokeAllTokensForUser(user.getId());
+        userSecurityStateService.evict(user.getId());
     }
 
     private AuthenticationResponse completeLogin(User user, String deviceId, String clientIp) {
@@ -713,7 +741,6 @@ public class AuthService {
         );
         String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getRole().name(), storedSession.sessionId());
         temporaryCacheService.cacheLastLoginMetadata(user.getId(), clientIp);
-        refreshTokenService.deleteExpiredRefreshTokens();
         auditService.recordEvent(AuditAction.LOGIN_SUCCESS, user.getId(), deviceId, clientIp);
         authMetricsService.recordLoginAttempt("success");
         log.info("User login succeeded for userId={} from ip={}", user.getId(), clientIp);
@@ -781,6 +808,10 @@ public class AuthService {
 
     private void consumePasswordWorkFactor(String rawPassword) {
         passwordEncoder.matches(rawPassword == null ? "" : rawPassword, dummyPasswordHash);
+    }
+
+    private void sendAfterCommit(Runnable task) {
+        afterCommitExecutor.run(task);
     }
 
     private AuditAction resolveThrottleAuditAction(String reason) {

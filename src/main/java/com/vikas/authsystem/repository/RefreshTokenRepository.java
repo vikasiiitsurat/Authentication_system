@@ -1,7 +1,9 @@
 package com.vikas.authsystem.repository;
 
 import com.vikas.authsystem.entity.RefreshToken;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
@@ -12,6 +14,15 @@ import java.util.UUID;
 
 public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID> {
     Optional<RefreshToken> findByTokenHash(String tokenHash);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select rt
+            from RefreshToken rt
+            join fetch rt.user
+            where rt.tokenHash = :tokenHash
+            """)
+    Optional<RefreshToken> findByTokenHashForUpdate(String tokenHash);
 
     Optional<RefreshToken> findByUser_IdAndSessionIdAndRevokedAtIsNull(UUID userId, UUID sessionId);
 
@@ -30,5 +41,5 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
             delete from RefreshToken rt
             where rt.expiryDate < :now
             """)
-    void deleteAllExpiredSince(Instant now);
+    int deleteAllExpiredSince(Instant now);
 }

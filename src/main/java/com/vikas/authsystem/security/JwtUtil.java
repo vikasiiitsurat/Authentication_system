@@ -44,7 +44,8 @@ public class JwtUtil {
                 .claims(Map.of(
                         "user_id", userId.toString(),
                         "role", role,
-                        "session_id", sessionId.toString()
+                        "session_id", sessionId.toString(),
+                        "token_type", "access"
                 ))
                 .signWith(signingKey)
                 .compact();
@@ -52,6 +53,7 @@ public class JwtUtil {
 
     public Jws<Claims> parseToken(String token) throws JwtException {
         return Jwts.parser()
+                .requireIssuer(jwtProperties.getIssuer())
                 .verifyWith(signingKey)
                 .build()
                 .parseSignedClaims(token);

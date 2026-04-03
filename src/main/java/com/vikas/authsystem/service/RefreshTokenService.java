@@ -93,7 +93,7 @@ public class RefreshTokenService {
         Timer.Sample sample = authMetricsService.startTimer();
         String outcome = "error";
         try {
-            RefreshToken currentToken = refreshTokenRepository.findByTokenHash(hashToken(rawRefreshToken))
+            RefreshToken currentToken = refreshTokenRepository.findByTokenHashForUpdate(hashToken(rawRefreshToken))
                     .orElse(null);
             if (currentToken == null) {
                 outcome = "invalid_token";
@@ -130,7 +130,7 @@ public class RefreshTokenService {
             rotatedToken.setLastUsedAt(now);
             rotatedToken.setLastSeenIp(normalizeIpAddress(clientIp));
 
-            refreshTokenRepository.save(currentToken);
+            refreshTokenRepository.saveAndFlush(currentToken);
             refreshTokenRepository.save(rotatedToken);
 
             String accessToken = jwtUtil.generateAccessToken(
@@ -220,8 +220,8 @@ public class RefreshTokenService {
     }
 
     @Transactional
-    public void deleteExpiredRefreshTokens() {
-        refreshTokenRepository.deleteAllExpiredSince(Instant.now(clock));
+    public int deleteExpiredRefreshTokens() {
+        return refreshTokenRepository.deleteAllExpiredSince(Instant.now(clock));
     }
 
     public String hashToken(String rawToken) {
