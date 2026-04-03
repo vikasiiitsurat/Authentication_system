@@ -1,9 +1,12 @@
 package com.vikas.authsystem.controller;
 
 import com.vikas.authsystem.dto.DeleteAccountRequest;
+import com.vikas.authsystem.dto.TwoFactorStatusResponse;
+import com.vikas.authsystem.dto.TwoFactorUpdateRequest;
 import com.vikas.authsystem.dto.UserProfileResponse;
 import com.vikas.authsystem.security.AuthenticatedUser;
 import com.vikas.authsystem.service.AccountManagementService;
+import com.vikas.authsystem.service.TwoFactorManagementService;
 import com.vikas.authsystem.service.UserQueryService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -36,10 +39,16 @@ public class UserController {
 
     private final UserQueryService userQueryService;
     private final AccountManagementService accountManagementService;
+    private final TwoFactorManagementService twoFactorManagementService;
 
-    public UserController(UserQueryService userQueryService, AccountManagementService accountManagementService) {
+    public UserController(
+            UserQueryService userQueryService,
+            AccountManagementService accountManagementService,
+            TwoFactorManagementService twoFactorManagementService
+    ) {
         this.userQueryService = userQueryService;
         this.accountManagementService = accountManagementService;
+        this.twoFactorManagementService = twoFactorManagementService;
     }
 
     @GetMapping("/users/me")
@@ -80,6 +89,58 @@ public class UserController {
                 extractClientIp(servletRequest)
         );
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/users/me/2fa/enable")
+    @Operation(
+            summary = "Enable email-based login 2FA for the authenticated account",
+            description = "Turns on email OTP verification during login for the current account after confirming the current password. The current profile and future logins will reflect the updated 2FA state."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "2FA enabled or already enabled",
+                    content = @Content(schema = @Schema(implementation = TwoFactorStatusResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Validation failed or the account is not eligible for 2FA enablement",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "401", description = "Authentication is required or current password is invalid",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
+    })
+    public ResponseEntity<TwoFactorStatusResponse> enableTwoFactor(
+            @Valid @RequestBody TwoFactorUpdateRequest request,
+            @AuthenticationPrincipal AuthenticatedUser authenticatedUser,
+            HttpServletRequest servletRequest
+    ) {
+        TwoFactorStatusResponse response = twoFactorManagementService.enable(
+                authenticatedUser,
+                request,
+                extractClientIp(servletRequest)
+        );
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/users/me/2fa/disable")
+    @Operation(
+            summary = "Disable email-based login 2FA for the authenticated account",
+            description = "Turns off email OTP verification during login for the current account after confirming the current password. Any pending login 2FA challenge is invalidated."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "2FA disabled or already disabled",
+                    content = @Content(schema = @Schema(implementation = TwoFactorStatusResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Validation failed",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "401", description = "Authentication is required or current password is invalid",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
+    })
+    public ResponseEntity<TwoFactorStatusResponse> disableTwoFactor(
+            @Valid @RequestBody TwoFactorUpdateRequest request,
+            @AuthenticationPrincipal AuthenticatedUser authenticatedUser,
+            HttpServletRequest servletRequest
+    ) {
+        TwoFactorStatusResponse response = twoFactorManagementService.disable(
+                authenticatedUser,
+                request,
+                extractClientIp(servletRequest)
+        );
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/users/{userId}")

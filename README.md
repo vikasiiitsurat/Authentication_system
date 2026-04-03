@@ -6,6 +6,7 @@ Production-oriented authentication and user management API built with Spring Boo
 
 - User registration with email verification OTP
 - Forgot-password and password-reset flow
+- Optional email-based 2FA for login, managed from the authenticated profile
 - Self-service account unlock flow for protected accounts
 - JWT access tokens with refresh-token rotation
 - Global logout that invalidates access tokens and refresh-token sessions across devices
@@ -50,6 +51,7 @@ Production-oriented authentication and user management API built with Spring Boo
 - Temporary security flags stored for accounts
 - Detect sudden high activity from an IP
 - Handle OTP when unlocking account
+- Handle short-lived login 2FA challenges and OTP verification
 - OTP issuance and OTP verification limits
 - storesb OTP codes, OTP attempts, resend cooldowns
 - token/session blacklist support
@@ -198,6 +200,44 @@ This is production-grade because:
 - it does not bypass IP-wide suspicious-source blocks
 - it keeps anti-enumeration behavior on the request endpoint
 
+## Login 2FA Logic
+
+Email-based login 2FA is an optional authenticated-account setting.
+
+- endpoint to enable: `POST /api/users/me/2fa/enable`
+- endpoint to disable: `POST /api/users/me/2fa/disable`
+- both endpoints require a valid bearer token and the current password
+- profile responses now expose whether 2FA is enabled
+
+### Login flow when 2FA is disabled
+
+- `POST /api/auth/login` validates the password
+- backend returns access and refresh tokens immediately
+
+### Login flow when 2FA is enabled
+
+- `POST /api/auth/login` validates the password first
+- backend creates a short-lived Redis-backed login challenge bound to the device and client context
+- backend emails a 6-digit OTP to the verified account address
+- login response returns `authenticationStatus=TWO_FACTOR_REQUIRED`
+- frontend stores the `twoFactorChallengeToken`
+- frontend calls `POST /api/auth/verify-login-2fa`
+- backend verifies the OTP and only then issues access and refresh tokens
+
+### Resend flow
+
+- frontend calls `POST /api/auth/resend-login-2fa` with the active challenge token
+- backend enforces resend cooldown and scoped rate limits
+- the challenge remains active and the OTP is re-sent
+
+This is production-grade because:
+
+- JWTs are not minted before the second factor is completed
+- the challenge is short-lived and stored in Redis instead of the browser
+- the OTP is scoped to the active login challenge
+- the verification step is rate-limited independently from password checks
+- password change, account deletion, or disabling 2FA invalidates the outstanding login challenge
+
 ## OTP Rate Limiting Logic
 
 OTP-related endpoints use three scopes:
@@ -242,6 +282,18 @@ OTP-related endpoints use three scopes:
 - per IP: 20 per 30 minutes
 - per account+IP: 10 per 5 minutes
 
+### Login 2FA request / resend
+
+- per account: 5 per 15 minutes
+- per IP: 10 per 15 minutes
+- per account+IP: 5 per 15 minutes
+
+### Login 2FA verification
+
+- per account: 10 per 30 minutes
+- per IP: 20 per 30 minutes
+- per account+IP: 10 per 5 minutes
+
 Each issued OTP also has its own attempt limit inside Redis.
 
 ## API Endpoints
@@ -253,7 +305,9 @@ Base URL: `http://localhost:8080`
 | `POST` | `/api/auth/register` | No | Register a user and send an email verification OTP |
 | `POST` | `/api/auth/verify-email` | No | Verify the 6-digit email OTP |
 | `POST` | `/api/auth/resend-verification-otp` | No | Resend an email verification OTP |
-| `POST` | `/api/auth/login` | No | Login with layered Redis-backed abuse protection |
+| `POST` | `/api/auth/login` | No | Login with layered Redis-backed abuse protection and optionally start a 2FA challenge |
+| `POST` | `/api/auth/verify-login-2fa` | No | Verify the OTP for a pending login 2FA challenge and complete authentication |
+| `POST` | `/api/auth/resend-login-2fa` | No | Resend the OTP for a pending login 2FA challenge |
 | `POST` | `/api/auth/forgot-password` | No | Request a password reset OTP with anti-enumeration behavior |
 | `POST` | `/api/auth/reset-password` | No | Reset password using the emailed OTP |
 | `POST` | `/api/auth/request-account-unlock` | No | Request an account unlock OTP when recovery is available |
@@ -262,6 +316,8 @@ Base URL: `http://localhost:8080`
 | `POST` | `/api/auth/logout` | Yes | Revoke refresh token and blacklist current access token |
 | `POST` | `/api/auth/logout-all` | Yes | Revoke all active sessions and invalidate all existing access tokens |
 | `POST` | `/api/auth/change-password` | Yes | Change password and revoke active sessions |
+| `POST` | `/api/users/me/2fa/enable` | Yes | Enable email-based login 2FA after current-password confirmation |
+| `POST` | `/api/users/me/2fa/disable` | Yes | Disable email-based login 2FA after current-password confirmation |
 | `POST` | `/api/users/me/delete-account` | Yes | Soft-delete the authenticated account after password and email confirmation |
 | `GET` | `/api/sessions` | Yes | List active sessions |
 | `DELETE` | `/api/sessions/{sessionId}` | Yes | Revoke one session |
@@ -278,6 +334,22 @@ POST /api/auth/login
   "email": "user@example.com",
   "password": "StrongPass123",
   "deviceId": "postman-local"
+}
+```
+
+```json
+POST /api/auth/verify-login-2fa
+{
+  "challengeToken": "y6wpr0yZ4n2XH5N6G6i8GsbSx0qnLxul8QK-v7Q9Or4",
+  "otp": "123456"
+}
+```
+
+```json
+POST /api/users/me/2fa/enable
+{
+  "currentPassword": "StrongPass123",
+  "deviceId": "web-browser"
 }
 ```
 
@@ -351,6 +423,7 @@ MAIL_FROM=no-reply@example.com
 MAIL_VERIFICATION_SUBJECT=Verify your email address
 MAIL_PASSWORD_RESET_SUBJECT=Reset your password
 MAIL_ACCOUNT_UNLOCK_SUBJECT=Unlock your account
+MAIL_LOGIN_2FA_SUBJECT=Your login verification code
 MAIL_LOG_OTP=true
 
 MAIL_HOST=smtp.gmail.com
@@ -426,6 +499,20 @@ ACCOUNT_UNLOCK_CONFIRM_IP_ATTEMPTS=20
 ACCOUNT_UNLOCK_CONFIRM_IP_WINDOW_SECONDS=1800
 ACCOUNT_UNLOCK_CONFIRM_ACCOUNT_IP_ATTEMPTS=10
 ACCOUNT_UNLOCK_CONFIRM_ACCOUNT_IP_WINDOW_SECONDS=300
+
+LOGIN_2FA_REQUEST_ACCOUNT_ATTEMPTS=5
+LOGIN_2FA_REQUEST_ACCOUNT_WINDOW_SECONDS=900
+LOGIN_2FA_REQUEST_IP_ATTEMPTS=10
+LOGIN_2FA_REQUEST_IP_WINDOW_SECONDS=900
+LOGIN_2FA_REQUEST_ACCOUNT_IP_ATTEMPTS=5
+LOGIN_2FA_REQUEST_ACCOUNT_IP_WINDOW_SECONDS=900
+
+LOGIN_2FA_CONFIRM_ACCOUNT_ATTEMPTS=10
+LOGIN_2FA_CONFIRM_ACCOUNT_WINDOW_SECONDS=1800
+LOGIN_2FA_CONFIRM_IP_ATTEMPTS=20
+LOGIN_2FA_CONFIRM_IP_WINDOW_SECONDS=1800
+LOGIN_2FA_CONFIRM_ACCOUNT_IP_ATTEMPTS=10
+LOGIN_2FA_CONFIRM_ACCOUNT_IP_WINDOW_SECONDS=300
 ```
 
 ## Monitoring
@@ -467,6 +554,7 @@ OpenAPI JSON:
 The OpenAPI descriptions now document:
 
 - anti-enumeration login behavior
+- optional email-based login 2FA and the two-step authentication contract
 - layered Redis-backed login throttling
 - password reset endpoints
 - account unlock recovery endpoints
@@ -480,10 +568,31 @@ Suggested flow:
 2. retrieve verification OTP from logs or email
 3. `POST /api/auth/verify-email`
 4. `POST /api/auth/login`
-5. `POST /api/auth/forgot-password`
-6. retrieve password reset OTP from logs or email
-7. `POST /api/auth/reset-password`
-8. `POST /api/auth/login` with the new password
+5. if `authenticationStatus=TWO_FACTOR_REQUIRED`, retrieve the login OTP from logs or email
+6. `POST /api/auth/verify-login-2fa`
+7. `POST /api/auth/forgot-password`
+8. retrieve password reset OTP from logs or email
+9. `POST /api/auth/reset-password`
+10. `POST /api/auth/login` with the new password
+
+### Profile 2FA UI to backend flow
+
+Frontend:
+
+1. profile screen loads `GET /api/users/me`
+2. UI reads `twoFactorEnabled`
+3. user toggles the 2FA control
+4. UI asks for the current password
+5. UI calls `POST /api/users/me/2fa/enable` or `POST /api/users/me/2fa/disable`
+6. UI refreshes profile state after the response
+
+Backend:
+
+1. endpoint verifies the bearer token
+2. endpoint verifies the current password
+3. backend updates `two_factor_enabled` on the user record
+4. backend records an audit event for the setting change
+5. disabling 2FA invalidates any active login 2FA challenge
 
 ### Account unlock UI to backend flow
 

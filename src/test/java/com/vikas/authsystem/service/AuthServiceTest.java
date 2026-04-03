@@ -2,19 +2,21 @@ package com.vikas.authsystem.service;
 
 import com.vikas.authsystem.dto.AccountUnlockRequest;
 import com.vikas.authsystem.dto.AccountUnlockRequestResponse;
+import com.vikas.authsystem.dto.AuthenticationResponse;
 import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
 import com.vikas.authsystem.dto.ForgotPasswordRequest;
 import com.vikas.authsystem.dto.GlobalLogoutResponse;
 import com.vikas.authsystem.dto.LoginRequest;
-import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.PasswordChangeRequest;
 import com.vikas.authsystem.dto.PasswordResetRequestResponse;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
+import com.vikas.authsystem.dto.ResendLoginTwoFactorRequest;
 import com.vikas.authsystem.dto.ResendVerificationOtpRequest;
 import com.vikas.authsystem.dto.ResetPasswordRequest;
 import com.vikas.authsystem.dto.VerifyAccountUnlockRequest;
 import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
+import com.vikas.authsystem.dto.VerifyLoginTwoFactorRequest;
 import com.vikas.authsystem.entity.User;
 import com.vikas.authsystem.entity.UserRole;
 import com.vikas.authsystem.exception.BadRequestException;
@@ -62,7 +64,9 @@ class AuthServiceTest {
     private final EmailVerificationOtpService emailVerificationOtpService = mock(EmailVerificationOtpService.class);
     private final PasswordResetOtpService passwordResetOtpService = mock(PasswordResetOtpService.class);
     private final AccountUnlockOtpService accountUnlockOtpService = mock(AccountUnlockOtpService.class);
+    private final LoginTwoFactorChallengeService loginTwoFactorChallengeService = mock(LoginTwoFactorChallengeService.class);
     private final OtpDeliveryService otpDeliveryService = mock(OtpDeliveryService.class);
+    private final RateLimiterService rateLimiterService = mock(RateLimiterService.class);
     private final AuditService auditService = mock(AuditService.class);
     private final AuthMetricsService authMetricsService = mock(AuthMetricsService.class);
 
@@ -84,7 +88,9 @@ class AuthServiceTest {
                 emailVerificationOtpService,
                 passwordResetOtpService,
                 accountUnlockOtpService,
+                loginTwoFactorChallengeService,
                 otpDeliveryService,
+                rateLimiterService,
                 auditService,
                 authMetricsService,
                 clock
@@ -121,15 +127,134 @@ class AuthServiceTest {
                         "127.0.0.1"
                 ));
 
-        LoginResponse response = authService.login(
+        AuthenticationResponse response = authService.login(
                 new LoginRequest(user.getEmail(), "correct-password", "device-1"),
                 "127.0.0.1"
         );
 
         assertEquals("access-token", response.accessToken());
         assertEquals("refresh-token", response.refreshToken());
+        assertEquals("AUTHENTICATED", response.authenticationStatus());
         verify(loginProtectionService).clearSuccess(user.getEmail(), "127.0.0.1");
         verify(authMetricsService).recordOperation("login", "success", null);
+    }
+
+    @Test
+    void loginReturnsTwoFactorChallengeWhenEnabled() {
+        User user = baseUser();
+        user.setTwoFactorEnabled(true);
+        user.setTwoFactorEnabledAt(FIXED_NOW.minusSeconds(60));
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches("correct-password", user.getPasswordHash())).thenReturn(true);
+        when(loginProtectionService.hashIpAddress("127.0.0.1")).thenReturn("ip-hash");
+        when(loginTwoFactorChallengeService.issueChallenge(user, "device-1", "ip-hash"))
+                .thenReturn(new LoginTwoFactorChallengeService.ChallengeIssueResult(
+                        "challenge-token",
+                        "918273",
+                        300,
+                        60,
+                        user.getId(),
+                        user.getEmail(),
+                        "device-1"
+                ));
+
+        AuthenticationResponse response = authService.login(
+                new LoginRequest(user.getEmail(), "correct-password", "device-1"),
+                "127.0.0.1"
+        );
+
+        assertEquals("TWO_FACTOR_REQUIRED", response.authenticationStatus());
+        assertEquals("challenge-token", response.twoFactorChallengeToken());
+        verify(otpDeliveryService).sendLoginTwoFactorOtp(user.getEmail(), "918273", 300);
+        verify(refreshTokenService, never()).generateRawRefreshToken();
+        verify(authMetricsService).recordOperation("login", "two_factor_required", null);
+    }
+
+    @Test
+    void verifyLoginTwoFactorCompletesAuthentication() {
+        User user = baseUser();
+        user.setTwoFactorEnabled(true);
+        user.setTwoFactorEnabledAt(FIXED_NOW.minusSeconds(60));
+        when(loginTwoFactorChallengeService.getRequiredChallengeContext("challenge-token"))
+                .thenReturn(new LoginTwoFactorChallengeService.ChallengeContext(
+                        user.getId(),
+                        user.getEmail(),
+                        "device-1",
+                        "ip-hash",
+                        "challenge-token",
+                        FIXED_NOW.getEpochSecond(),
+                        FIXED_NOW.plusSeconds(60).getEpochSecond()
+                ));
+        when(loginProtectionService.hashIpAddress("127.0.0.1")).thenReturn("ip-hash");
+        when(loginTwoFactorChallengeService.verifyChallenge("challenge-token", "123456", "ip-hash"))
+                .thenReturn(new LoginTwoFactorChallengeService.ChallengeVerificationResult(
+                        user.getId(),
+                        user.getEmail(),
+                        "device-1",
+                        FIXED_NOW.getEpochSecond(),
+                        240
+                ));
+        when(userRepository.findByIdForUpdate(user.getId())).thenReturn(Optional.of(user));
+        UUID sessionId = UUID.randomUUID();
+        when(jwtUtil.generateAccessToken(user.getId(), user.getRole().name(), sessionId)).thenReturn("access-token");
+        when(jwtUtil.accessTokenTtlSeconds()).thenReturn(900L);
+        when(refreshTokenService.generateRawRefreshToken()).thenReturn("refresh-token");
+        when(refreshTokenService.storeRefreshToken(user, "refresh-token", "device-1", "127.0.0.1"))
+                .thenReturn(new RefreshTokenService.StoredSession(
+                        sessionId,
+                        "device-1",
+                        FIXED_NOW,
+                        FIXED_NOW,
+                        FIXED_NOW.plusSeconds(3600),
+                        "127.0.0.1"
+                ));
+
+        AuthenticationResponse response = authService.verifyLoginTwoFactor(
+                new VerifyLoginTwoFactorRequest("challenge-token", "123456"),
+                "127.0.0.1"
+        );
+
+        assertEquals("AUTHENTICATED", response.authenticationStatus());
+        assertEquals("access-token", response.accessToken());
+        verify(authMetricsService).recordOperation("verify_login_two_factor", "success", null);
+    }
+
+    @Test
+    void resendLoginTwoFactorResendsOtpForActiveChallenge() {
+        User user = baseUser();
+        user.setTwoFactorEnabled(true);
+        user.setTwoFactorEnabledAt(FIXED_NOW.minusSeconds(60));
+        when(loginTwoFactorChallengeService.getRequiredChallengeContext("challenge-token"))
+                .thenReturn(new LoginTwoFactorChallengeService.ChallengeContext(
+                        user.getId(),
+                        user.getEmail(),
+                        "device-1",
+                        "ip-hash",
+                        "challenge-token",
+                        FIXED_NOW.getEpochSecond(),
+                        FIXED_NOW.plusSeconds(60).getEpochSecond()
+                ));
+        when(userRepository.findActiveById(user.getId())).thenReturn(Optional.of(user));
+        when(loginProtectionService.hashIpAddress("127.0.0.1")).thenReturn("ip-hash");
+        when(loginTwoFactorChallengeService.resendChallenge("challenge-token", "ip-hash"))
+                .thenReturn(new LoginTwoFactorChallengeService.ChallengeIssueResult(
+                        "challenge-token",
+                        "918273",
+                        240,
+                        60,
+                        user.getId(),
+                        user.getEmail(),
+                        "device-1"
+                ));
+
+        AuthenticationResponse response = authService.resendLoginTwoFactor(
+                new ResendLoginTwoFactorRequest("challenge-token"),
+                "127.0.0.1"
+        );
+
+        assertEquals("TWO_FACTOR_REQUIRED", response.authenticationStatus());
+        verify(otpDeliveryService).sendLoginTwoFactorOtp(user.getEmail(), "918273", 240);
+        verify(authMetricsService).recordOperation("resend_login_two_factor", "success", null);
     }
 
     @Test

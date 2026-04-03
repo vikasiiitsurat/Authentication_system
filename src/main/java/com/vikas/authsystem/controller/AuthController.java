@@ -1,22 +1,25 @@
 package com.vikas.authsystem.controller;
 
+import com.vikas.authsystem.dto.AccountUnlockRequest;
+import com.vikas.authsystem.dto.AccountUnlockRequestResponse;
+import com.vikas.authsystem.dto.AuthenticationResponse;
+import com.vikas.authsystem.dto.ForgotPasswordRequest;
+import com.vikas.authsystem.dto.GlobalLogoutResponse;
 import com.vikas.authsystem.dto.LoginRequest;
 import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.LogoutRequest;
-import com.vikas.authsystem.dto.AccountUnlockRequest;
-import com.vikas.authsystem.dto.AccountUnlockRequestResponse;
-import com.vikas.authsystem.dto.ForgotPasswordRequest;
-import com.vikas.authsystem.dto.GlobalLogoutResponse;
 import com.vikas.authsystem.dto.PasswordChangeRequest;
 import com.vikas.authsystem.dto.PasswordResetRequestResponse;
 import com.vikas.authsystem.dto.RefreshTokenRequest;
+import com.vikas.authsystem.dto.ResendLoginTwoFactorRequest;
 import com.vikas.authsystem.dto.ResendVerificationOtpRequest;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
 import com.vikas.authsystem.dto.ResetPasswordRequest;
 import com.vikas.authsystem.dto.VerifyAccountUnlockRequest;
-import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
 import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
+import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
+import com.vikas.authsystem.dto.VerifyLoginTwoFactorRequest;
 import com.vikas.authsystem.security.AuthenticatedUser;
 import com.vikas.authsystem.service.AuthService;
 import com.vikas.authsystem.service.RateLimiterService;
@@ -78,23 +81,69 @@ public class AuthController {
 
     @PostMapping("/login")
     @Operation(
-            summary = "Authenticate and create a session",
-            description = "Validates user credentials behind layered Redis-backed abuse protection. The endpoint applies per-IP throttling, adaptive per-account+IP cooldowns, and short-lived per-account protection signals while keeping public failure responses generic to reduce user enumeration risk and avoid user-hostile long-lived account locks.",
+            summary = "Authenticate with password and optionally start a 2FA challenge",
+            description = "Validates user credentials behind layered Redis-backed abuse protection. When email-based login 2FA is disabled, the endpoint returns tokens immediately. When 2FA is enabled, the endpoint sends a login OTP and returns a short-lived challenge token that must be verified before access and refresh tokens are issued.",
             tags = {"Authentication"}
     )
     @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Login succeeded",
-                    content = @Content(schema = @Schema(implementation = LoginResponse.class))),
+            @ApiResponse(responseCode = "200", description = "Login succeeded or 2FA challenge issued",
+                    content = @Content(schema = @Schema(implementation = AuthenticationResponse.class))),
             @ApiResponse(responseCode = "400", description = "Validation failed",
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
             @ApiResponse(responseCode = "401", description = "Invalid email or password",
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "429", description = "Source-specific login rate limit exceeded",
+            @ApiResponse(responseCode = "429", description = "Source-specific login or login-2FA request rate limit exceeded",
                     content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
     })
-    public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest servletRequest) {
+    public ResponseEntity<AuthenticationResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest servletRequest) {
         String clientIp = extractClientIp(servletRequest);
-        LoginResponse response = authService.login(request, clientIp);
+        AuthenticationResponse response = authService.login(request, clientIp);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/verify-login-2fa")
+    @Operation(
+            summary = "Verify the OTP for a pending 2FA login challenge",
+            description = "Consumes the login challenge token and 6-digit OTP sent to the user's email address. A successful verification completes authentication and returns access and refresh tokens.",
+            tags = {"Authentication"}
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "2FA verified and login completed",
+                    content = @Content(schema = @Schema(implementation = AuthenticationResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Validation failed, challenge expired, or OTP is invalid",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "429", description = "Login 2FA verification rate limit exceeded",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
+    })
+    public ResponseEntity<AuthenticationResponse> verifyLoginTwoFactor(
+            @Valid @RequestBody VerifyLoginTwoFactorRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        String clientIp = extractClientIp(servletRequest);
+        AuthenticationResponse response = authService.verifyLoginTwoFactor(request, clientIp);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/resend-login-2fa")
+    @Operation(
+            summary = "Resend the OTP for a pending 2FA login challenge",
+            description = "Resends the email OTP for an active login 2FA challenge. The challenge stays bound to the original login context and is subject to cooldowns and layered request limits.",
+            tags = {"Authentication"}
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "2FA challenge remains active and OTP is resent",
+                    content = @Content(schema = @Schema(implementation = AuthenticationResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Validation failed or challenge is invalid",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "429", description = "Login 2FA resend rate limit or cooldown exceeded",
+                    content = @Content(schema = @Schema(implementation = com.vikas.authsystem.dto.ApiErrorResponse.class)))
+    })
+    public ResponseEntity<AuthenticationResponse> resendLoginTwoFactor(
+            @Valid @RequestBody ResendLoginTwoFactorRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        String clientIp = extractClientIp(servletRequest);
+        AuthenticationResponse response = authService.resendLoginTwoFactor(request, clientIp);
         return ResponseEntity.ok(response);
     }
 

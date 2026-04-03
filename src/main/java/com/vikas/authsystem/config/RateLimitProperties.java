@@ -11,6 +11,8 @@ public class RateLimitProperties {
     private final ScopedLimit passwordResetConfirmation = new ScopedLimit();
     private final ScopedLimit accountUnlockRequest = new ScopedLimit();
     private final ScopedLimit accountUnlockConfirmation = new ScopedLimit();
+    private final ScopedLimit loginTwoFactorRequest = new ScopedLimit();
+    private final ScopedLimit loginTwoFactorConfirmation = new ScopedLimit();
 
     public ScopedLimit getOtpGeneration() {
         return otpGeneration;
@@ -34,6 +36,14 @@ public class RateLimitProperties {
 
     public ScopedLimit getAccountUnlockConfirmation() {
         return accountUnlockConfirmation;
+    }
+
+    public ScopedLimit getLoginTwoFactorRequest() {
+        return loginTwoFactorRequest;
+    }
+
+    public ScopedLimit getLoginTwoFactorConfirmation() {
+        return loginTwoFactorConfirmation;
     }
 
     public static class ScopedLimit {

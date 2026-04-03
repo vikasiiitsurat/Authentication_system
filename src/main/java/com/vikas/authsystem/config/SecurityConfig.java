@@ -75,6 +75,8 @@ public class SecurityConfig {
                                 HttpMethod.POST,
                                 "/api/auth/register",
                                 "/api/auth/login",
+                                "/api/auth/verify-login-2fa",
+                                "/api/auth/resend-login-2fa",
                                 "/api/auth/refresh",
                                 "/api/auth/verify-email",
                                 "/api/auth/resend-verification-otp",

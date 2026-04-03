@@ -17,6 +17,8 @@ public class RateLimiterService {
     private static final String PASSWORD_RESET_CONFIRMATION_KEY_PREFIX = "auth:rl:password-reset-confirmation:";
     private static final String ACCOUNT_UNLOCK_REQUEST_KEY_PREFIX = "auth:rl:account-unlock-request:";
     private static final String ACCOUNT_UNLOCK_CONFIRMATION_KEY_PREFIX = "auth:rl:account-unlock-confirmation:";
+    private static final String LOGIN_TWO_FACTOR_REQUEST_KEY_PREFIX = "auth:rl:login-two-factor-request:";
+    private static final String LOGIN_TWO_FACTOR_CONFIRMATION_KEY_PREFIX = "auth:rl:login-two-factor-confirmation:";
     private static final DefaultRedisScript<Long> INCREMENT_WITH_TTL_SCRIPT = new DefaultRedisScript<>(
             """
             local current = redis.call('INCR', KEYS[1])
@@ -105,6 +107,28 @@ public class RateLimiterService {
                 normalize(email),
                 normalize(ipAddress),
                 "Too many account unlock attempts. Please request a new code or try again later."
+        );
+    }
+
+    public void validateLoginTwoFactorRequestRateLimit(String email, String ipAddress) {
+        validateScopedLimit(
+                LOGIN_TWO_FACTOR_REQUEST_KEY_PREFIX,
+                "login_two_factor_request",
+                rateLimitProperties.getLoginTwoFactorRequest(),
+                normalize(email),
+                normalize(ipAddress),
+                "Too many login verification requests. Please try again later."
+        );
+    }
+
+    public void validateLoginTwoFactorConfirmationRateLimit(String email, String ipAddress) {
+        validateScopedLimit(
+                LOGIN_TWO_FACTOR_CONFIRMATION_KEY_PREFIX,
+                "login_two_factor_confirmation",
+                rateLimitProperties.getLoginTwoFactorConfirmation(),
+                normalize(email),
+                normalize(ipAddress),
+                "Too many login verification attempts. Please request a new code or try again later."
         );
     }
 

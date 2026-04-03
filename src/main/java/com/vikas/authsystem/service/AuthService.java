@@ -1,25 +1,28 @@
 package com.vikas.authsystem.service;
 
-import com.vikas.authsystem.dto.LoginRequest;
-import com.vikas.authsystem.dto.LoginResponse;
+import com.vikas.authsystem.dto.AccountUnlockRequest;
+import com.vikas.authsystem.dto.AccountUnlockRequestResponse;
+import com.vikas.authsystem.dto.AuthenticationResponse;
+import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
 import com.vikas.authsystem.dto.ForgotPasswordRequest;
 import com.vikas.authsystem.dto.GlobalLogoutResponse;
+import com.vikas.authsystem.dto.LoginRequest;
+import com.vikas.authsystem.dto.LoginResponse;
 import com.vikas.authsystem.dto.PasswordChangeRequest;
 import com.vikas.authsystem.dto.PasswordResetRequestResponse;
 import com.vikas.authsystem.dto.RefreshTokenRequest;
+import com.vikas.authsystem.dto.ResendLoginTwoFactorRequest;
 import com.vikas.authsystem.dto.ResendVerificationOtpRequest;
 import com.vikas.authsystem.dto.RegisterRequest;
 import com.vikas.authsystem.dto.RegisterResponse;
 import com.vikas.authsystem.dto.ResetPasswordRequest;
+import com.vikas.authsystem.dto.VerifyAccountUnlockRequest;
 import com.vikas.authsystem.dto.VerifyEmailOtpRequest;
-import com.vikas.authsystem.dto.EmailVerificationStatusResponse;
-import com.vikas.authsystem.dto.AccountUnlockRequest;
-import com.vikas.authsystem.dto.AccountUnlockRequestResponse;
+import com.vikas.authsystem.dto.VerifyLoginTwoFactorRequest;
 import com.vikas.authsystem.entity.AuditAction;
 import com.vikas.authsystem.entity.RefreshToken;
 import com.vikas.authsystem.entity.User;
 import com.vikas.authsystem.entity.UserRole;
-import com.vikas.authsystem.dto.VerifyAccountUnlockRequest;
 import com.vikas.authsystem.exception.BadRequestException;
 import com.vikas.authsystem.exception.ResourceConflictException;
 import com.vikas.authsystem.exception.TooManyRequestsException;
@@ -57,7 +60,9 @@ public class AuthService {
     private final EmailVerificationOtpService emailVerificationOtpService;
     private final PasswordResetOtpService passwordResetOtpService;
     private final AccountUnlockOtpService accountUnlockOtpService;
+    private final LoginTwoFactorChallengeService loginTwoFactorChallengeService;
     private final OtpDeliveryService otpDeliveryService;
+    private final RateLimiterService rateLimiterService;
     private final AuditService auditService;
     private final AuthMetricsService authMetricsService;
     private final Clock clock;
@@ -75,7 +80,9 @@ public class AuthService {
             EmailVerificationOtpService emailVerificationOtpService,
             PasswordResetOtpService passwordResetOtpService,
             AccountUnlockOtpService accountUnlockOtpService,
+            LoginTwoFactorChallengeService loginTwoFactorChallengeService,
             OtpDeliveryService otpDeliveryService,
+            RateLimiterService rateLimiterService,
             AuditService auditService,
             AuthMetricsService authMetricsService,
             Clock clock
@@ -91,7 +98,9 @@ public class AuthService {
         this.emailVerificationOtpService = emailVerificationOtpService;
         this.passwordResetOtpService = passwordResetOtpService;
         this.accountUnlockOtpService = accountUnlockOtpService;
+        this.loginTwoFactorChallengeService = loginTwoFactorChallengeService;
         this.otpDeliveryService = otpDeliveryService;
+        this.rateLimiterService = rateLimiterService;
         this.auditService = auditService;
         this.authMetricsService = authMetricsService;
         this.clock = clock;
@@ -166,7 +175,7 @@ public class AuthService {
     }
 
     @Transactional
-    public LoginResponse login(LoginRequest request, String clientIp) {
+    public AuthenticationResponse login(LoginRequest request, String clientIp) {
         Timer.Sample sample = authMetricsService.startTimer();
         String outcome = "error";
         try {
@@ -219,26 +228,97 @@ public class AuthService {
                 throw new UnauthorizedException(GENERIC_LOGIN_FAILURE_MESSAGE);
             }
 
-            loginProtectionService.clearSuccess(normalizedEmail, clientIp);
-            // Access tokens stay stateless while refresh-token lifecycle is delegated to RefreshTokenService.
-            String refreshToken = refreshTokenService.generateRawRefreshToken();
-            RefreshTokenService.StoredSession storedSession = refreshTokenService.storeRefreshToken(
-                    user,
-                    refreshToken,
-                    request.deviceId(),
-                    clientIp
-            );
-            String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getRole().name(), storedSession.sessionId());
-            temporaryCacheService.cacheLastLoginMetadata(user.getId(), clientIp);
-            refreshTokenService.deleteExpiredRefreshTokens();
-            auditService.recordEvent(AuditAction.LOGIN_SUCCESS, user.getId(), request.deviceId(), clientIp);
+            if (user.isTwoFactorEnabled()) {
+                String clientIpHash = loginProtectionService.hashIpAddress(clientIp);
+                rateLimiterService.validateLoginTwoFactorRequestRateLimit(user.getEmail(), clientIp);
+                LoginTwoFactorChallengeService.ChallengeIssueResult challengeIssueResult =
+                        loginTwoFactorChallengeService.issueChallenge(user, request.deviceId(), clientIpHash);
+                otpDeliveryService.sendLoginTwoFactorOtp(
+                        user.getEmail(),
+                        challengeIssueResult.otp(),
+                        challengeIssueResult.expiresInSeconds()
+                );
+                auditService.recordEvent(AuditAction.LOGIN_TWO_FACTOR_CHALLENGE_ISSUED, user.getId(), request.deviceId(), clientIp);
+                auditService.recordEvent(AuditAction.LOGIN_TWO_FACTOR_OTP_SENT, user.getId(), request.deviceId(), clientIp);
+                outcome = "two_factor_required";
+                authMetricsService.recordLoginAttempt("two_factor_required");
+                return AuthenticationResponse.twoFactorRequired(
+                        challengeIssueResult.challengeToken(),
+                        challengeIssueResult.expiresInSeconds(),
+                        challengeIssueResult.resendAvailableInSeconds()
+                );
+            }
 
-            log.info("User login succeeded for userId={} from ip={}", user.getId(), clientIp);
             outcome = "success";
-            authMetricsService.recordLoginAttempt("success");
-            return new LoginResponse(accessToken, refreshToken, "Bearer", jwtUtil.accessTokenTtlSeconds());
+            return completeLogin(user, request.deviceId(), clientIp);
         } finally {
             authMetricsService.recordOperation("login", outcome, sample);
+        }
+    }
+
+    @Transactional
+    public AuthenticationResponse verifyLoginTwoFactor(VerifyLoginTwoFactorRequest request, String clientIp) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            LoginTwoFactorChallengeService.ChallengeContext challengeContext =
+                    loginTwoFactorChallengeService.getRequiredChallengeContext(request.challengeToken());
+            rateLimiterService.validateLoginTwoFactorConfirmationRateLimit(challengeContext.email(), clientIp);
+
+            LoginTwoFactorChallengeService.ChallengeVerificationResult verificationResult;
+            try {
+                verificationResult = loginTwoFactorChallengeService.verifyChallenge(
+                        request.challengeToken(),
+                        request.otp(),
+                        loginProtectionService.hashIpAddress(clientIp)
+                );
+            } catch (BadRequestException ex) {
+                outcome = "invalid_otp";
+                authMetricsService.recordLoginAttempt("failure");
+                authMetricsService.recordLoginFailure("two_factor_invalid_otp");
+                auditService.recordEvent(AuditAction.LOGIN_TWO_FACTOR_FAILED, challengeContext.userId(), challengeContext.deviceId(), clientIp);
+                throw ex;
+            }
+
+            User user = userRepository.findByIdForUpdate(verificationResult.userId())
+                    .orElseThrow(() -> new BadRequestException("Login verification challenge is no longer valid"));
+            validateLoginChallengeState(user, verificationResult.createdAtEpochSecond());
+            auditService.recordEvent(AuditAction.LOGIN_TWO_FACTOR_VERIFIED, user.getId(), verificationResult.deviceId(), clientIp);
+            outcome = "success";
+            return completeLogin(user, verificationResult.deviceId(), clientIp);
+        } finally {
+            authMetricsService.recordOperation("verify_login_two_factor", outcome, sample);
+        }
+    }
+
+    @Transactional
+    public AuthenticationResponse resendLoginTwoFactor(ResendLoginTwoFactorRequest request, String clientIp) {
+        Timer.Sample sample = authMetricsService.startTimer();
+        String outcome = "error";
+        try {
+            LoginTwoFactorChallengeService.ChallengeContext challengeContext =
+                    loginTwoFactorChallengeService.getRequiredChallengeContext(request.challengeToken());
+            User user = userRepository.findActiveById(challengeContext.userId())
+                    .orElseThrow(() -> new BadRequestException("Login verification challenge is no longer valid"));
+            validateLoginChallengeState(user, challengeContext.createdAtEpochSecond());
+            rateLimiterService.validateLoginTwoFactorRequestRateLimit(user.getEmail(), clientIp);
+
+            LoginTwoFactorChallengeService.ChallengeIssueResult challengeIssueResult =
+                    loginTwoFactorChallengeService.resendChallenge(request.challengeToken(), loginProtectionService.hashIpAddress(clientIp));
+            otpDeliveryService.sendLoginTwoFactorOtp(
+                    user.getEmail(),
+                    challengeIssueResult.otp(),
+                    challengeIssueResult.expiresInSeconds()
+            );
+            auditService.recordEvent(AuditAction.LOGIN_TWO_FACTOR_OTP_SENT, user.getId(), challengeContext.deviceId(), clientIp);
+            outcome = "success";
+            return AuthenticationResponse.twoFactorRequired(
+                    challengeIssueResult.challengeToken(),
+                    challengeIssueResult.expiresInSeconds(),
+                    challengeIssueResult.resendAvailableInSeconds()
+            );
+        } finally {
+            authMetricsService.recordOperation("resend_login_two_factor", outcome, sample);
         }
     }
 
@@ -617,7 +697,40 @@ public class AuthService {
         user.setPasswordHash(passwordEncoder.encode(rawPassword));
         user.setPasswordChangedAt(Instant.now(clock));
         resetFailedLoginState(user);
+        loginTwoFactorChallengeService.invalidateChallenge(user.getId());
         refreshTokenService.revokeAllTokensForUser(user.getId());
+    }
+
+    private AuthenticationResponse completeLogin(User user, String deviceId, String clientIp) {
+        loginProtectionService.clearSuccess(user.getEmail(), clientIp);
+        loginTwoFactorChallengeService.invalidateChallenge(user.getId());
+        String refreshToken = refreshTokenService.generateRawRefreshToken();
+        RefreshTokenService.StoredSession storedSession = refreshTokenService.storeRefreshToken(
+                user,
+                refreshToken,
+                deviceId,
+                clientIp
+        );
+        String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getRole().name(), storedSession.sessionId());
+        temporaryCacheService.cacheLastLoginMetadata(user.getId(), clientIp);
+        refreshTokenService.deleteExpiredRefreshTokens();
+        auditService.recordEvent(AuditAction.LOGIN_SUCCESS, user.getId(), deviceId, clientIp);
+        authMetricsService.recordLoginAttempt("success");
+        log.info("User login succeeded for userId={} from ip={}", user.getId(), clientIp);
+        return AuthenticationResponse.authenticated(accessToken, refreshToken, "Bearer", jwtUtil.accessTokenTtlSeconds());
+    }
+
+    private void validateLoginChallengeState(User user, long challengeCreatedAtEpochSecond) {
+        if (!user.isEmailVerified() || !user.isTwoFactorEnabled()) {
+            throw new BadRequestException("Login verification challenge is no longer valid");
+        }
+        Instant challengeCreatedAt = Instant.ofEpochSecond(challengeCreatedAtEpochSecond);
+        if (user.getPasswordChangedAt() != null && user.getPasswordChangedAt().isAfter(challengeCreatedAt)) {
+            throw new BadRequestException("Login verification challenge is no longer valid");
+        }
+        if (user.getDeletedAt() != null) {
+            throw new BadRequestException("Login verification challenge is no longer valid");
+        }
     }
 
     private void revokeAuthenticatedAccess(AuthenticatedUser authenticatedUser) {

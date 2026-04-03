@@ -77,6 +77,23 @@ public class SmtpOtpDeliveryService implements OtpDeliveryService {
         }
     }
 
+    @Override
+    public void sendLoginTwoFactorOtp(String email, String otp, long expiresInSeconds) {
+        try {
+            MimeMessage mimeMessage = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, false, "UTF-8");
+            helper.setFrom(requiredFromAddress());
+            helper.setTo(email);
+            helper.setSubject(mailProperties.getLoginTwoFactorSubject());
+            helper.setText(buildLoginTwoFactorBody(otp, expiresInSeconds), false);
+            mailSender.send(mimeMessage);
+            log.info("login_two_factor_otp_email_sent email={} expiresInSeconds={}", maskEmail(email), expiresInSeconds);
+        } catch (MessagingException | MailException ex) {
+            log.error("login_two_factor_otp_email_failed email={} error={}", maskEmail(email), ex.getMessage());
+            throw new ServiceUnavailableException("OTP delivery is temporarily unavailable. Please try again.");
+        }
+    }
+
     private String requiredFromAddress() {
         if (mailProperties.getFrom() == null || mailProperties.getFrom().isBlank()) {
             throw new IllegalStateException("app.mail.from must be configured when SMTP delivery is enabled");
@@ -128,6 +145,24 @@ public class SmtpOtpDeliveryService implements OtpDeliveryService {
                 %s
 
                 This code expires in %d minute(s). If you did not request this unlock, ignore this email and consider changing your password.
+
+                Thanks,
+                AuthSystem Security
+                """.formatted(otp, expiresInMinutes);
+    }
+
+    private String buildLoginTwoFactorBody(String otp, long expiresInSeconds) {
+        long expiresInMinutes = Math.max(1, Math.round(expiresInSeconds / 60.0));
+        return """
+                Hello,
+
+                A sign-in attempt for your account requires email-based two-factor verification.
+
+                Use the following one-time password to complete login:
+
+                %s
+
+                This code expires in %d minute(s). If you did not try to sign in, change your password and review active sessions.
 
                 Thanks,
                 AuthSystem Security

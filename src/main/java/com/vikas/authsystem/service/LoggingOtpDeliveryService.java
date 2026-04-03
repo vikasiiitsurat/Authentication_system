@@ -50,6 +50,17 @@ public class LoggingOtpDeliveryService implements OtpDeliveryService {
         );
     }
 
+    @Override
+    public void sendLoginTwoFactorOtp(String email, String otp, long expiresInSeconds) {
+        String otpToken = mailProperties.isLogOtp() ? otp : "<redacted>";
+        log.info(
+                "login_two_factor_otp_dispatched email={} otp={} expiresInSeconds={}",
+                maskEmail(email),
+                otpToken,
+                expiresInSeconds
+        );
+    }
+
     private String maskEmail(String email) {
         int separatorIndex = email.indexOf('@');
         if (separatorIndex <= 1) {

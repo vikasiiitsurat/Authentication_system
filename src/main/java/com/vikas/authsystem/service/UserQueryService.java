@@ -42,6 +42,8 @@ public class UserQueryService {
                 user.getFullName(),
                 user.getEmail(),
                 user.getRole(),
+                user.isTwoFactorEnabled(),
+                user.getTwoFactorEnabledAt(),
                 user.getCreatedAt(),
                 user.getUpdatedAt()
         );

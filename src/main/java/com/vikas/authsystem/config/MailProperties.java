@@ -9,6 +9,7 @@ public class MailProperties {
     private String verificationSubject = "Verify your email address";
     private String passwordResetSubject = "Reset your password";
     private String accountUnlockSubject = "Unlock your account";
+    private String loginTwoFactorSubject = "Your login verification code";
     private String deliveryMode = "log";
     private boolean logOtp = true;
 
@@ -42,6 +43,14 @@ public class MailProperties {
 
     public void setAccountUnlockSubject(String accountUnlockSubject) {
         this.accountUnlockSubject = accountUnlockSubject;
+    }
+
+    public String getLoginTwoFactorSubject() {
+        return loginTwoFactorSubject;
+    }
+
+    public void setLoginTwoFactorSubject(String loginTwoFactorSubject) {
+        this.loginTwoFactorSubject = loginTwoFactorSubject;
     }
 
     public String getDeliveryMode() {

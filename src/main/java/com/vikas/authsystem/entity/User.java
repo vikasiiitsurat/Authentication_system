@@ -66,6 +66,12 @@ public class User {
     @Column(name = "session_invalidated_at")
     private Instant sessionInvalidatedAt;
 
+    @Column(name = "two_factor_enabled", nullable = false)
+    private boolean twoFactorEnabled;
+
+    @Column(name = "two_factor_enabled_at")
+    private Instant twoFactorEnabledAt;
+
     @Column(name = "deleted_at")
     private Instant deletedAt;
 
@@ -202,6 +208,22 @@ public class User {
 
     public void setSessionInvalidatedAt(Instant sessionInvalidatedAt) {
         this.sessionInvalidatedAt = sessionInvalidatedAt;
+    }
+
+    public boolean isTwoFactorEnabled() {
+        return twoFactorEnabled;
+    }
+
+    public void setTwoFactorEnabled(boolean twoFactorEnabled) {
+        this.twoFactorEnabled = twoFactorEnabled;
+    }
+
+    public Instant getTwoFactorEnabledAt() {
+        return twoFactorEnabledAt;
+    }
+
+    public void setTwoFactorEnabledAt(Instant twoFactorEnabledAt) {
+        this.twoFactorEnabledAt = twoFactorEnabledAt;
     }
 
     public Instant getDeletedAt() {

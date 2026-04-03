@@ -21,7 +21,7 @@ public class OpenApiConfig {
                         .description(
                                 "Production-grade authentication and session management API covering " +
                                         "registration, anti-enumeration login, Redis-backed distributed abuse protection, " +
-                                        "JWT token lifecycle, active session controls, global logout, email verification OTP flows, " +
+                                        "JWT token lifecycle, optional email-based login 2FA, active session controls, global logout, email verification OTP flows, " +
                                         "password reset flows, account unlock recovery, account deletion, and user profile access."
                         )
                         .contact(new Contact()
@@ -47,6 +47,8 @@ public class OpenApiConfig {
                 .pathsToMatch(
                         "/api/auth/register",
                         "/api/auth/login",
+                        "/api/auth/verify-login-2fa",
+                        "/api/auth/resend-login-2fa",
                         "/api/auth/forgot-password",
                         "/api/auth/request-account-unlock",
                         "/api/auth/reset-password",
@@ -76,6 +78,8 @@ public class OpenApiConfig {
                 .group("password-otp")
                 .pathsToMatch(
                         "/api/auth/change-password",
+                        "/api/auth/verify-login-2fa",
+                        "/api/auth/resend-login-2fa",
                         "/api/auth/verify-email",
                         "/api/auth/resend-verification-otp",
                         "/api/auth/forgot-password",
