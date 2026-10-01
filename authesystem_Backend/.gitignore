@@ -1,0 +1,6 @@
+target/
+.idea/
+*.log
+.env
+.env.*
+src/main/resources/

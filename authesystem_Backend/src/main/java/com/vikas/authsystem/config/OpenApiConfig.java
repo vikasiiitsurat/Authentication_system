@@ -1,0 +1,92 @@
+package com.vikas.authsystem.config;
+
+import io.swagger.v3.oas.models.Components;
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.info.Contact;
+import io.swagger.v3.oas.models.info.Info;
+import io.swagger.v3.oas.models.security.SecurityScheme;
+import org.springdoc.core.models.GroupedOpenApi;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class OpenApiConfig {
+
+    @Bean
+    public OpenAPI authSystemOpenApi() {
+        return new OpenAPI()
+                .info(new Info()
+                        .title("Auth System API")
+                        .version("0.0.1-SNAPSHOT")
+                        .description(
+                                "Production-grade authentication and session management API covering " +
+                                        "registration, anti-enumeration login, Redis-backed distributed abuse protection, " +
+                                        "JWT token lifecycle, optional email-based login 2FA, active session controls, global logout, email verification OTP flows, " +
+                                        "password reset flows, account unlock recovery, account deletion, and user profile access."
+                        )
+                        .contact(new Contact()
+                                .name("Auth System API Support")
+                                .email("support@authsystem.local")
+                        ))
+                .components(new Components()
+                        .addSecuritySchemes(
+                                "bearerAuth",
+                                new SecurityScheme()
+                                        .name("Authorization")
+                                        .type(SecurityScheme.Type.HTTP)
+                                        .scheme("bearer")
+                                        .bearerFormat("JWT")
+                                        .description("JWT access token. Example: Bearer eyJhbGciOiJIUzI1NiJ9...")
+                        ));
+    }
+
+    @Bean
+    public GroupedOpenApi authenticationApi() {
+        return GroupedOpenApi.builder()
+                .group("authentication")
+                .pathsToMatch(
+                        "/api/auth/register",
+                        "/api/auth/login",
+                        "/api/auth/verify-login-2fa",
+                        "/api/auth/resend-login-2fa",
+                        "/api/auth/forgot-password",
+                        "/api/auth/request-account-unlock",
+                        "/api/auth/reset-password",
+                        "/api/auth/unlock-account",
+                        "/api/users/**",
+                        "/api/admin/users"
+                )
+                .build();
+    }
+
+    @Bean
+    public GroupedOpenApi tokenManagementApi() {
+        return GroupedOpenApi.builder()
+                .group("token-management")
+                .pathsToMatch(
+                        "/api/auth/refresh",
+                        "/api/auth/logout",
+                        "/api/auth/logout-all",
+                        "/api/sessions/**"
+                )
+                .build();
+    }
+
+    @Bean
+    public GroupedOpenApi passwordAndOtpApi() {
+        return GroupedOpenApi.builder()
+                .group("password-otp")
+                .pathsToMatch(
+                        "/api/auth/change-password",
+                        "/api/auth/verify-login-2fa",
+                        "/api/auth/resend-login-2fa",
+                        "/api/auth/verify-email",
+                        "/api/auth/resend-verification-otp",
+                        "/api/auth/forgot-password",
+                        "/api/auth/reset-password",
+                        "/api/auth/request-account-unlock",
+                        "/api/auth/unlock-account"
+                )
+                .build();
+    }
+}

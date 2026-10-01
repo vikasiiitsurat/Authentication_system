@@ -1,0 +1,92 @@
+groups:
+  - name: auth-system-alerts
+    rules:
+      - alert: AuthServiceDown
+        expr: up{job="auth-system"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: authesystem1
+        annotations:
+          summary: Auth System scrape target is down
+          description: Prometheus has been unable to scrape the Auth System metrics endpoint for at least 2 minutes.
+
+      - alert: ElevatedLoginFailures
+        expr: sum(increase(auth_login_failures_total[10m])) > 20
+        for: 5m
+        labels:
+          severity: warning
+          service: authesystem1
+        annotations:
+          summary: Elevated login failure volume
+          description: Login failures exceeded 20 events over the last 10 minutes.
+
+      - alert: AccountProtectionActivated
+        expr: sum(increase(auth_account_protection_total{scope="account",action=~"activated|escalated"}[15m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: authesystem1
+        annotations:
+          summary: Account protection activated frequently
+          description: More than 5 account protection activations or escalations were recorded in the last 15 minutes.
+
+      - alert: SuspiciousIpBurstDetected
+        expr: sum(increase(auth_ip_burst_total{action="blocked"}[10m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: authesystem1
+        annotations:
+          summary: Suspicious IP burst detected
+          description: At least one IP was blocked for attacking too many distinct accounts in the last 10 minutes.
+
+      - alert: RefreshReplayDetected
+        expr: sum(increase(auth_operation_total{operation="refresh_token",outcome="replay_detected"}[10m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: authesystem1
+        annotations:
+          summary: Refresh token replay detected
+          description: At least one refresh-token replay event was recorded in the last 10 minutes.
+
+      - alert: AuditPersistenceFailures
+        expr: sum(increase(auth_audit_event_total{outcome="failed"}[10m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: authesystem1
+        annotations:
+          summary: Audit persistence failures detected
+          description: Audit events failed to persist within the last 10 minutes.
+
+      - alert: ExcessiveRateLimitRejections
+        expr: sum by (limiter, scope) (increase(auth_rate_limit_total{outcome=~"rejected|blocked"}[10m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: authesystem1
+        annotations:
+          summary: Excessive auth rate-limit rejections
+          description: The {{ $labels.limiter }} limiter for scope {{ $labels.scope }} rejected or blocked more than 10 requests over the last 10 minutes.
+
+      - alert: LoginProtectionRedisErrors
+        expr: sum(increase(auth_redis_operation_total{component="login_protection",outcome="backend_error"}[10m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: authesystem1
+        annotations:
+          summary: Login protection Redis errors detected
+          description: Login protection Redis operations reported backend errors in the last 10 minutes.
+
+      - alert: HighLoginLatencyP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(auth_operation_duration_seconds_bucket{operation="login"}[5m]))) > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: authesystem1
+        annotations:
+          summary: Login latency p95 is high
+          description: The 95th percentile login latency has exceeded 1 second for at least 10 minutes.
